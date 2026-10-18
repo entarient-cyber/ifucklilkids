@@ -231,7 +231,7 @@ titleCorner.CornerRadius = UDim.new(0, 4)
 titleCorner.Parent = titleBar
 
 local titleText = Instance.new("TextLabel")
-titleText.Size = UDim2.new(1, -150, 1, 0) -- Leaves exactly 150px for the 3 buttons
+titleText.Size = UDim2.new(1, -150, 1, 0) 
 titleText.Position = UDim2.new(0, 12, 0, 0)
 titleText.BackgroundTransparency = 1
 titleText.Font = Enum.Font.Gotham
@@ -241,17 +241,29 @@ titleText.TextSize = 12
 titleText.TextXAlignment = Enum.TextXAlignment.Left
 titleText.Parent = titleBar
 
-local function createWinBtn(text, posX, isClose)
+-- ✅ FIXED: Using a UIListLayout to guarantee the buttons are always perfectly placed
+local controlsFrame = Instance.new("Frame")
+controlsFrame.Size = UDim2.new(0, 138, 1, 0)
+controlsFrame.Position = UDim2.new(1, -138, 0, 0)
+controlsFrame.BackgroundTransparency = 1
+controlsFrame.Parent = titleBar
+
+local controlsLayout = Instance.new("UIListLayout")
+controlsLayout.FillDirection = Enum.FillDirection.Horizontal
+controlsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+controlsLayout.Parent = controlsFrame
+
+local function createWinBtn(text, order, isClose)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(0, 46, 1, 0)
-    btn.Position = UDim2.new(1, posX, 0, 0)
+    btn.LayoutOrder = order
     btn.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
     btn.BorderSizePixel = 0
     btn.Font = Enum.Font.Gotham
     btn.Text = text
     btn.TextColor3 = Color3.fromRGB(220, 220, 220)
     btn.TextSize = 12
-    btn.Parent = titleBar
+    btn.Parent = controlsFrame
     btn.MouseEnter:Connect(function()
         btn.BackgroundColor3 = isClose and Color3.fromRGB(232, 17, 35) or Color3.fromRGB(50, 50, 50)
         if isClose then btn.TextColor3 = Color3.new(1,1,1) end
@@ -263,10 +275,9 @@ local function createWinBtn(text, posX, isClose)
     return btn
 end
 
--- Fixed the positions so they fit perfectly inside the window
-local minBtn = createWinBtn("—", -138, false)
-local maxBtn = createWinBtn("□", -92, false)
-local closeBtn = createWinBtn("✕", -46, true)
+local minBtn = createWinBtn("—", 1, false)
+local maxBtn = createWinBtn("□", 2, false)
+local closeBtn = createWinBtn("✕", 3, true)
 
 local consoleFrame = Instance.new("ScrollingFrame")
 consoleFrame.Size = UDim2.new(1, -20, 1, -76)
@@ -369,7 +380,7 @@ local function processCommand(input)
     
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 200, 255))
-        log("  !check          - Auto-finds max safe size (prevents 261 kick)")
+        log("  !check          - Auto-finds max safe size (prevents kick)")
         log("  !nuke           - Instantly spam max payload")
         log("  !crash          - Safe heavy crasher (Slower, no kick)")
         log("  !stop           - Stop payload")
@@ -399,7 +410,7 @@ local function processCommand(input)
                 return
             end
             
-            local wasRunning = api and api.isRunning()
+            local wasRunning = api and api.stats()[2] > 0 -- Check if passes > 0
             if wasRunning then api.stop() end
             
             local testSizes = {50000, 100000, 150000, 200000}
@@ -430,8 +441,6 @@ local function processCommand(input)
             if api then api.setChildren(bestSize) end
             log("[!!!] TEST COMPLETE. RECOMMENDED SIZE: " .. bestSize, Color3.fromRGB(0, 255, 0))
             log("[+] Type '!crash' or '!nuke' to begin.", Color3.fromRGB(0, 255, 0))
-            
-            if wasRunning then api.start(false) end
         end)
         
     elseif cmd == "!stop" then
@@ -483,8 +492,6 @@ local dragStart, startPos
 
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        -- Prevents dragging when clicking the close/min/max buttons
-        if input.Position.X >= minBtn.AbsolutePosition.X and input.Position.X <= (closeBtn.AbsolutePosition.X + closeBtn.AbsoluteSize.X) then return end
         dragging = true
         dragStart = input.Position
         startPos = main.Position
