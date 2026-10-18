@@ -12,9 +12,16 @@ local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local HttpService = game:GetService("HttpService")
+local Stats = game:GetService("Stats")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+-- 🚨 ADDED PING RADAR FUNCTION
+local function getPing()
+    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+    return ok and math.floor(p) or 0
+end
 
 local COLORS = {
     bg = Color3.fromRGB(14, 14, 16),
@@ -760,7 +767,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
     if input.KeyCode == Enum.KeyCode.End and active then setActive(false) end
 end)
 
--- ═══ READOUT ═══
+-- ═══ READOUT (PING RADAR) ═══
 local lastPasses, lastT, acc, pacc = 0, os.clock(), 0, 0
 
 RunService.RenderStepped:Connect(function(dt)
@@ -776,18 +783,31 @@ RunService.RenderStepped:Connect(function(dt)
         return
     end
 
+    -- 🚨 PING RADAR LOGIC
     if not active then
-        status.Text = "idle  |  " .. sizeBtn.Text .. "  |  " .. fmtBtn.Text
-        status.TextColor3 = COLORS.dim
+        local p = getPing()
+        local hint = "SAFE TO CRASH"
+        local pColor = COLORS.good
+        
+        if p > 250 then
+            hint = "HIGH PING - WAIT"
+            pColor = COLORS.accentBright
+        elseif p > 120 then
+            hint = "SLIGHT LAG - RISK"
+            pColor = COLORS.accent
+        end
+        
+        status.Text = string.format("Ping: %dms | %s", p, hint)
+        status.TextColor3 = pColor
         lastPasses, lastT = 0, os.clock()
     else
         local ms, passes, mem, children, queued, reason, payloadMb, interval = api.stats()
         local now = os.clock()
         local rate = (passes - lastPasses) / math.max(now - lastT, 1e-3)
         lastPasses, lastT = passes, now
-
-        status.Text = string.format("%.1fs | %.1f MB | q %.0f MB | %.2f/s",
-            interval or 0, payloadMb or 0, queued or 0, rate)
+        
+        local p = getPing()
+        status.Text = string.format("Ping: %dms | %.1fs | %.2f/s", p, interval or 0, rate)
 
         if (queued or 0) > 200 then
             status.TextColor3 = COLORS.accentBright
