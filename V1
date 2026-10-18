@@ -8,10 +8,10 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 -- ═══════════ CORE LOGIC ═══════════
-local Children       = 50000   -- Lowered from 180k so it doesn't lag you
+local Children       = 180000   -- 🚨 RESTORED TO 180K
 local FireBurst      = 1.5
 local FrameDelay     = 0.130
-local Format         = "compact" -- Compact uses less CPU than "pair"
+local Format         = "pair"   -- 🚨 RESTORED TO PAIR
 
 local state = { running = false, thread = nil, remote = nil, cache = nil, interval = 2.5, passes = 0 }
 local RemoteCandidates = {
@@ -41,7 +41,7 @@ local function build(size)
         for i = 1, sz do root[i] = i end
         return root
     end
-    for i = 1, sz do root[i] = { i, i * 2 } end
+    for i = 1, sz do root[i] = { id = i, v = i * 2 } end
     return root
 end
 
@@ -276,14 +276,14 @@ local function processCommand(input)
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            local testSize = 50000
+            local testSize = 100000
             log("[*] Firing " .. testSize .. " payload for 3 seconds...", Color3.fromRGB(200, 200, 200))
             
             local before = getPing()
             
             local p = {}
             for j = 1, testSize do
-                p[j] = {j, j*2}
+                p[j] = {id = j, v = j}
                 if j % 10000 == 0 then task.wait() end
             end
             
@@ -354,9 +354,9 @@ local function processCommand(input)
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            -- ✅ TESTING FROM 25K ALL THE WAY TO 1M
-            local sizes = {25000, 50000, 100000, 250000, 500000, 750000, 1000000}
-            local bestSize = 25000
+            -- ✅ TESTING FROM 100K ALL THE WAY TO 1M
+            local sizes = {100000, 200000, 300000, 400000, 500000, 600000, 700000, 800000, 900000, 1000000}
+            local bestSize = 50000
             
             for _, sz in ipairs(sizes) do
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
@@ -365,7 +365,7 @@ local function processCommand(input)
                 -- Yield build so game doesn't freeze
                 local p = {}
                 for j = 1, sz do
-                    p[j] = {j, j*2}
+                    p[j] = {id = j, v = j}
                     if j % 20000 == 0 then task.wait() end
                 end
                 
