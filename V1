@@ -162,7 +162,7 @@ local ICONS = {
 	main = "120460840221871",
 	localplayer = "137473874188820",
 	enlighten = "13844232201",
-	tools = "6022860324",
+	tools = "18289846788",
 	build = "18289846788",
 	grief = "15980546444",
 	bot = "116420922152213",
@@ -436,7 +436,7 @@ end
 
 miniWidget.MouseButton1Click:Connect(restoreWindow)
 
--- Custom Mac Buttons (Pixel/Squircle Style)
+-- Custom Mac Buttons (Perfect Square Pixel Style)
 local function macBtn(col, action)
 	local wrapper = new("TextButton", {
 		Size=UDim2.new(0, 22, 0, 22), BackgroundTransparency=1,
@@ -447,7 +447,7 @@ local function macBtn(col, action)
 		Size=UDim2.new(0,16,0,16), BackgroundColor3=col,
 		BorderSizePixel=0, Parent=wrapper,
 	})
-	corner(b, 3)
+	corner(b, 0) -- 0 for perfect pixel square
 	
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = col:Lerp(Color3.new(0,0,0), 0.4)
@@ -487,7 +487,7 @@ makeIconButton(function(p)
 		BorderSizePixel = 0,
 		Parent = p
 	})
-	corner(outer, 3)
+	corner(outer, 0)
 
 	local s = Instance.new("UIStroke")
 	s.Color = THEME.TextDim
@@ -1273,7 +1273,7 @@ local nav = new("ScrollingFrame", {
 	Parent=sidebarContent,
 })
 
--- The actual list container to hold tabs (fixes the empty space)
+-- The actual list container to hold tabs
 local navList = new("Frame", {
 	Size=UDim2.new(1,0,0,0), BackgroundTransparency=1,
 	AutomaticSize=Enum.AutomaticSize.Y, Parent=nav,
@@ -1281,29 +1281,6 @@ local navList = new("Frame", {
 local navLay = Instance.new("UIListLayout")
 navLay.Padding = UDim.new(0,4); navLay.Parent = navList
 navLay.SortOrder = Enum.SortOrder.LayoutOrder
-
--- Animated Active Tab Indicator (Magma Pill)
-local navIndicator = new("Frame", {
-	AnchorPoint = Vector2.new(0, 0.5),
-	Position = UDim2.new(0, 4, 0, 18),
-	Size = UDim2.new(0, 4, 0, 18),
-	BackgroundColor3 = Color3.new(1,1,1),
-	BorderSizePixel = 0,
-	ZIndex = 5,
-	Parent = nav,
-})
-corner(navIndicator, 999)
-
-local indGrad = Instance.new("UIGradient")
-indGrad.Color = MAGMA_SEQ
-indGrad.Parent = navIndicator
-
-task.spawn(function()
-	while navIndicator.Parent do
-		indGrad.Offset = Vector2.new(math.sin(tick() * 2) * 0.5, 0)
-		task.wait(0.05)
-	end
-end)
 
 local navButtons = {}
 local pages = {}
@@ -1496,12 +1473,6 @@ _G.__showPage = function(id)
 			local bgColor = active and THEME.MagmaMid:Lerp(THEME.SurfaceHi, 0.8) or THEME.SurfaceHi
 			tween(ibg, { BackgroundColor3 = bgColor }, 0.2)
 		end
-		
-		if active then
-			local btn = navButtons[tid]
-			local targetY = (btn.AbsolutePosition.Y - nav.AbsolutePosition.Y) + nav.CanvasPosition.Y + (btn.AbsoluteSize.Y / 2)
-			tween(navIndicator, { Position = UDim2.new(0, 4, 0, targetY) }, 0.3, Enum.EasingStyle.Quint)
-		end
 	end
 	for pid, p in pairs(pages) do
 		p.Visible = (pid == id)
@@ -1525,9 +1496,10 @@ local function makeCard(parent, height, title)
 	return card
 end
 
+-- INFO PAGE (Welcome)
 do
-	local home = pages.main
-	local welcomeCard = makeCard(home, 180)
+	local infoPage = pages.info
+	local welcomeCard = makeCard(infoPage, 180)
 
 	welcomeHeader = new("TextLabel", {
 		Position=UDim2.new(0,28,0,16),
@@ -1591,6 +1563,22 @@ do
 		Parent=welcomeCard
 	})
 
+	local comingCard = makeCard(infoPage, 200)
+	local csLbl = new("TextLabel", {
+		Size=UDim2.fromScale(1,1),
+		BackgroundTransparency=1,
+		Text="Coming Soon",
+		TextColor3=THEME.TextMute,
+		Font=Enum.Font.GothamBlack,
+		TextSize=24,
+		Parent=comingCard
+	})
+	table.insert(comingSoonLabels, csLbl)
+end
+
+-- MAIN PAGE (Coming Soon)
+do
+	local home = pages.main
 	local comingCard = makeCard(home, 200)
 	local csLbl = new("TextLabel", {
 		Size=UDim2.fromScale(1,1),
@@ -1605,7 +1593,7 @@ do
 end
 
 -- Generate Coming Soon for all other tabs
-local customTabs = { "info", "localplayer", "enlighten", "tools", "build", "grief", "settings" }
+local customTabs = { "localplayer", "enlighten", "tools", "build", "grief", "settings" }
 for _, tabId in ipairs(customTabs) do
 	local p = pages[tabId]
 	local comingCard = makeCard(p, 200)
@@ -1948,7 +1936,7 @@ runAntiAfk()
 
 task.delay(0.5, function()
 	if gui.Parent then
-		notify("Dirt", "Ender Hub Edition Loaded", THEME.MagmaMid)
+		notify("Cloaked Plague", "Loaded", THEME.MagmaMid)
 	end
 end)
 print("[Dirt] v2.7.1")
