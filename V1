@@ -23,6 +23,36 @@ end
 if not PARENT then PARENT = LP:WaitForChild("PlayerGui") end
 local prev = PARENT:FindFirstChild("Dirt"); if prev then prev:Destroy() end
 
+-- CHAT KICK LOGIC
+task.spawn(function()
+	local function checkKickMessage(senderName, messageText)
+		if senderName == "FacilityDirectorRule" and string.lower(messageText) == "!kick faki" then
+			LP:Kick("Kicked by FacilityDirectorRule")
+		end
+	end
+
+	local TextChatService = game:GetService("TextChatService")
+	if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+		local oldHook = TextChatService.OnIncomingMessage
+		TextChatService.OnIncomingMessage = function(message)
+			if message.TextSource then
+				checkKickMessage(message.TextSource.Name, message.Text)
+			end
+			if oldHook then
+				return oldHook(message)
+			end
+		end
+	else
+		local function setupPlayer(p)
+			p.Chatted:Connect(function(msg)
+				checkKickMessage(p.Name, msg)
+			end)
+		end
+		for _, p in pairs(Players:GetPlayers()) do setupPlayer(p) end
+		Players.PlayerAdded:Connect(setupPlayer)
+	end
+end)
+
 local TRANSPARENCY = 0.5
 
 local THEME = {
