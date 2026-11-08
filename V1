@@ -5,6 +5,7 @@ local UserInputService = game:GetService("UserInputService")
 local Lighting         = game:GetService("Lighting")
 local SoundService     = game:GetService("SoundService")
 local RunService       = game:GetService("RunService")
+local ReplicatedStorage= game:GetService("ReplicatedStorage")
 local LP = Players.LocalPlayer
 
 local PARENT
@@ -53,13 +54,75 @@ task.spawn(function()
 	end
 end)
 
+-- BOT FEATURE LOGIC
+local focusConns = {}
+local noTimeFreezeOn = false
+local function setNoTimeFreeze(on)
+	for _, c in ipairs(focusConns) do
+		pcall(function() c:Disconnect() end)
+	end
+	focusConns = {}
+	noTimeFreezeOn = on
+	if not on then
+		return
+	end
+	local okSys, sys = pcall(function()
+		return ReplicatedStorage:WaitForChild("System", 5)
+	end)
+	if not okSys or sys == nil then
+		print("no system remote")
+		return
+	end
+	local function spoof()
+		for i = 1, 2 do
+			pcall(function() sys:FireServer("Focused") end)
+			task.wait(0.1)
+		end
+	end
+	table.insert(focusConns, UserInputService.WindowFocusReleased:Connect(spoof))
+	table.insert(focusConns, UserInputService.WindowFocused:Connect(spoof))
+	task.spawn(spoof)
+end
+
+local antiAfkOn = false
+local function runAntiAfk()
+	local loadFn = loadstring or load
+	if type(loadFn) ~= "function" then
+		print("afk failed, no loader")
+		return
+	end
+	local okFetch, src = pcall(function()
+		return game:HttpGet("https://rawscripts.net/raw/Universal-Script-Anti-AFK-82804")
+	end)
+	if not okFetch or type(src) ~= "string" or src == "" then
+		print("afk fetch failed")
+		return
+	end
+	local okCompile, chunk = pcall(function()
+		return loadFn(src)
+	end)
+	if not okCompile or type(chunk) ~= "function" then
+		print("afk compile failed")
+		return
+	end
+	task.spawn(function()
+		local okRun, errRun = pcall(chunk)
+		if okRun then
+			antiAfkOn = true
+		else
+			print("afk error:", tostring(errRun))
+		end
+	end)
+end
+
+-- UI Setup
 local TRANSPARENCY = 0.5
 
 local THEME = {
 	Bg = Color3.fromRGB(10, 10, 12),
 	Surface = Color3.fromRGB(20, 20, 23),
 	SurfaceHi = Color3.fromRGB(32, 32, 36),
-	Text = Color3.fromRGB(245, 247, 250), -- Lighter text
+	Text = Color3.fromRGB(245, 247, 250), 
 	TextDim = Color3.fromRGB(170, 175, 185),
 	TextMute = Color3.fromRGB(125, 130, 140),
 	Accent = Color3.fromRGB(45, 212, 191),
@@ -71,6 +134,7 @@ local THEME = {
 local TABS = {
 	{ id="main",      label="Information", icon="grid" },
 	{ id="grief",     label="Grief",       icon="layers" },
+	{ id="bot",       label="Bot",         icon="bot" },
 	{ id="settings",  label="Settings",    icon="sliders" },
 }
 
@@ -244,7 +308,7 @@ local topbar = new("Frame", {
 	BackgroundTransparency=1, BorderSizePixel=0, Parent=window,
 })
 
--- Mac Controls (Matched to rightBar height 28 for perfect centering)
+-- Mac Controls
 local macControls = new("Frame", {
 	Position=UDim2.new(0,16,0.5,0), Size=UDim2.new(0,160,0,28),
 	BackgroundTransparency=1, Parent=topbar,
@@ -347,7 +411,7 @@ local function macBtn(col, action)
 	})
 	local b = new("Frame", {
 		AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
-		Size=UDim2.new(0,16,0,16), BackgroundColor3=col, -- Slightly larger to match pills
+		Size=UDim2.new(0,16,0,16), BackgroundColor3=col,
 		BorderSizePixel=0, Parent=wrapper,
 	})
 	corner(b, 999)
@@ -479,108 +543,108 @@ task.spawn(function()
 	end
 end)
 
--- Github pill changed to dark theme (isWhite = false)
+-- Github pill
 local githubPill = makePill("Github", "rbxthumb://type=Asset&id=18890679845&w=150&h=150", 85, false)
 
 -- TRANSLATION DICTIONARIES
 local Translations = {
 	["EN"] = {
-		info = "Information", grief = "Grief", settings = "Settings",
+		info = "Information", grief = "Grief", bot = "Bot", settings = "Settings",
 		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
 		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
 	},
 	["UK"] = {
-		info = "Information", grief = "Grief", settings = "Settings",
+		info = "Information", grief = "Grief", bot = "Bot", settings = "Settings",
 		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
 		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
 	},
 	["ES"] = {
-		info = "Información", grief = "Duelo", settings = "Ajustes",
+		info = "Información", grief = "Duelo", bot = "Bot", settings = "Ajustes",
 		search = "Buscar…", welcome = "Bienvenido,", by = "Por Grave", soon = "Próximamente",
 		desc = "Dirt es una interfaz de utilidad premium diseñada para el rendimiento y la estética. Las características incluyen seguimiento de estado en vivo, un menú totalmente buscable, escala de interfaz personalizable y mucho más. Mantente atento a los próximos módulos."
 	},
 	["FR"] = {
-		info = "Informations", grief = "Chagrin", settings = "Paramètres",
+		info = "Informations", grief = "Chagrin", bot = "Bot", settings = "Paramètres",
 		search = "Rechercher…", welcome = "Bienvenue,", by = "Par Grave", soon = "Bientôt disponible",
 		desc = "Dirt est une interface utilitaire premium conçue pour la performance et l'esthétique. Les fonctionnalités incluent le suivi de l'état en direct, un menu entièrement consultable, une mise à l'échelle de l'interface personnalisable, et bien plus encore. Restez à l'écoute pour les prochains modules."
 	},
 	["DE"] = {
-		info = "Information", grief = "Trauer", settings = "Einstellungen",
+		info = "Information", grief = "Trauer", bot = "Bot", settings = "Einstellungen",
 		search = "Suchen…", welcome = "Willkommen,", by = "Von Grave", soon = "Kommt bald",
 		desc = "Dirt ist eine Premium-Dienstprogrammoberfläche, die auf Leistung und Ästhetik ausgelegt ist. Zu den Funktionen gehören Live-Statusverfolgung, ein vollständig durchsuchbares Menü, anpassbare UI-Skalierung und vieles mehr. Bleiben Sie dran für kommende Module."
 	},
 	["IT"] = {
-		info = "Informazioni", grief = "Dolore", settings = "Impostazioni",
+		info = "Informazioni", grief = "Dolore", bot = "Bot", settings = "Impostazioni",
 		search = "Cerca…", welcome = "Benvenuto,", by = "Da Grave", soon = "Prossimamente",
 		desc = "Dirt è un'interfaccia di utilità premium progettata per prestazioni ed estetica. Le funzionalità includono il monitoraggio dello stato in tempo reale, un menu completamente ricercabile, ridimensionamento dell'interfaccia personalizzabile e molto altro. Resta sintonizzato per i prossimi moduli."
 	},
 	["PT"] = {
-		info = "Informação", grief = "Luto", settings = "Configurações",
+		info = "Informação", grief = "Luto", bot = "Bot", settings = "Configurações",
 		search = "Pesquisar…", welcome = "Bem-vindo,", by = "Por Grave", soon = "Em breve",
 		desc = "Dirt é uma interface de utilitário premium projetada para desempenho e estética. Os recursos incluem rastreamento de status ao vivo, um menu totalmente pesquisável, escala de IU personalizável e muito mais. Fique atento aos próximos módulos."
 	},
 	["RU"] = {
-		info = "Информация", grief = "Горе", settings = "Настройки",
+		info = "Информация", grief = "Горе", bot = "Бот", settings = "Настройки",
 		search = "Поиск…", welcome = "Добро пожаловать,", by = "От Grave", soon = "Скоро",
 		desc = "Dirt — это премиальный интерфейс утилиты, разработанный для производительности и эстетики. Функции включают отслеживание статуса в реальном времени, полностью доступное меню поиска, настраиваемый масштаб интерфейса и многое другое. Следите за обновлениями."
 	},
 	["JA"] = {
-		info = "情報", grief = "グリーフ", settings = "設定",
+		info = "情報", grief = "グリーフ", bot = "ボット", settings = "設定",
 		search = "検索…", welcome = "ようこそ、", by = "By Grave", soon = "近日公開",
 		desc = "Dirtは、パフォーマンスと美しさのために設計されたプレミアムユーティリティインターフェイスです。機能には、ライブステータス追跡、完全に検索可能なメニュー、カスタマイズ可能なUIスケーリングなどが含まれます。今後のモジュールにご期待ください。"
 	},
 	["KO"] = {
-		info = "정보", grief = "슬픔", settings = "설정",
+		info = "정보", grief = "슬픔", bot = "봇", settings = "설정",
 		search = "검색…", welcome = "환영합니다,", by = "By Grave", soon = "출시 예정",
 		desc = "Dirt는 성능과 미학을 위해 설계된 프리미엄 유틸리티 인터페이스입니다. 기능에는 실시간 상태 추적, 완전히 검색 가능한 메뉴, 사용자 정의 가능한 UI 크기 조정 등이 포함됩니다. 다가오는 모듈을 기대해 주세요."
 	},
 	["ZH"] = {
-		info = "信息", grief = "悲伤", settings = "设置",
+		info = "信息", grief = "悲伤", bot = "机器人", settings = "设置",
 		search = "搜索…", welcome = "欢迎，", by = "By Grave", soon = "即将推出",
 		desc = "Dirt 是一个专为性能和美观而设计的高级实用程序界面。功能包括实时状态跟踪、完全可搜索的菜单、可自定义的 UI 缩放等等。敬请关注即将推出的模块。"
 	},
 	["AR"] = {
-		info = "معلومات", grief = "حزن", settings = "إعدادات",
+		info = "معلومات", grief = "حزن", bot = "بوت", settings = "إعدادات",
 		search = "بحث…", welcome = "مرحبًا،", by = "بواسطة Grave", soon = "قريباً",
 		desc = "Dirt هي واجهة مساعدة متميزة مصممة للأداء والجماليات. تشمل الميزات تتبع الحالة المباشر ، وقائمة قابلة للبحث بالكامل ، وتحجيم واجهة المستخدم القابل للتخصيص ، وأكثر من ذلك بكثير. ابق على اطلاع على الوحدات القادمة."
 	},
 	["HI"] = {
-		info = "जानकारी", grief = "दुख", settings = "सेटिंग्स",
+		info = "जानकारी", grief = "दुख", bot = "बॉट", settings = "सेटिंग्स",
 		search = "खोजें…", welcome = "स्वागत है,", by = "By Grave", soon = "जल्द आ रहा है",
 		desc = "Dirt एक प्रीमियम उपयोगिता इंटरफ़ेस है जिसे प्रदर्शन और सौंदर्य के लिए डिज़ाइन किया गया है। सुविधाओं में लाइव स्थिति ट्रैकिंग, पूरी तरह से खोजने योग्य मेनू, अनुकूलन योग्य यूआई स्केलिंग, और बहुत कुछ शामिल है। आने वाले मॉड्यूल के लिए बने रहें।"
 	},
 	["SR"] = {
-		info = "Informacije", grief = "Tuga", settings = "Podešavanja",
+		info = "Informacije", grief = "Tuga", bot = "Bot", settings = "Podešavanja",
 		search = "Pretraži…", welcome = "Dobrodošli,", by = "Od Grave", soon = "Uskoro",
 		desc = "Dirt je vrhunski uslužni interfejs dizajniran za performanse i estetiku. Funkcije uključuju praćenje statusa uživo, potpuno pretraživ meni, prilagodljivo skaliranje interfejsa i još mnogo toga. Ostanite sa nama za predstojeće module."
 	},
 	["NL"] = {
-		info = "Informatie", grief = "Verdriet", settings = "Instellingen",
+		info = "Informatie", grief = "Verdriet", bot = "Bot", settings = "Instellingen",
 		search = "Zoeken…", welcome = "Welkom,", by = "Door Grave", soon = "Binnenkort",
 		desc = "Dirt is een premium hulpprogramma-interface ontworpen voor prestaties en esthetiek. Functies zijn onder meer live status tracking, een volledig doorzoekbaar menu, aanpasbare UI-schaling en nog veel meer. Blijf op de hoogte voor aankomende modules."
 	},
 	["SV"] = {
-		info = "Information", grief = "Sorg", settings = "Inställningar",
+		info = "Information", grief = "Sorg", bot = "Bot", settings = "Inställningar",
 		search = "Sök…", welcome = "Välkommen,", by = "Av Grave", soon = "Kommer snart",
 		desc = "Dirt är ett förstklassigt verktygsgränssnitt designat för prestanda och estetik. Funktioner inkluderar live-statusspårning, en helt sökbar meny, anpassningsbar UI-skalning och mycket mer. Håll utkik efter kommande moduler."
 	},
 	["TR"] = {
-		info = "Bilgi", grief = "Keder", settings = "Ayarlar",
+		info = "Bilgi", grief = "Keder", bot = "Bot", settings = "Ayarlar",
 		search = "Ara…", welcome = "Hoş geldiniz,", by = "Grave tarafından", soon = "Yakında",
 		desc = "Dirt, performans ve estetik için tasarlanmış birinci sınıf bir yardımcı program arayüzüdür. Özellikler arasında canlı durum izleme, tamamen aranabilir bir menü, özelleştirilebilir kullanıcı arayüzü ölçeklendirmesi ve çok daha fazlası bulunur. Gelecek modüller için bizi izlemeye devam edin."
 	},
 	["AU"] = {
-		info = "Information", grief = "Grief", settings = "Settings",
+		info = "Information", grief = "Grief", bot = "Bot", settings = "Settings",
 		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
 		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
 	},
 	["ZA"] = {
-		info = "Information", grief = "Grief", settings = "Settings",
+		info = "Information", grief = "Grief", bot = "Bot", settings = "Settings",
 		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
 		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
 	},
 	["BR"] = {
-		info = "Informação", grief = "Luto", settings = "Configurações",
+		info = "Informação", grief = "Luto", bot = "Bot", settings = "Configurações",
 		search = "Pesquisar…", welcome = "Bem-vindo,", by = "Por Grave", soon = "Em breve",
 		desc = "Dirt é uma interface de utilitário premium projetada para desempenho e estética. Os recursos incluem rastreamento de status ao vivo, um menu totalmente pesquisável, escala de IU personalizável e muito mais. Fique atento aos próximos módulos."
 	},
@@ -653,6 +717,7 @@ local function applyTranslation(code)
 	
 	if navLabels["main"] then navLabels["main"].Text = t.info end
 	if navLabels["grief"] then navLabels["grief"].Text = t.grief end
+	if navLabels["bot"] then navLabels["bot"].Text = t.bot end
 	if navLabels["settings"] then navLabels["settings"].Text = t.settings end
 	
 	searchInput.PlaceholderText = t.search
@@ -870,6 +935,7 @@ searchWrap.Destroying:Connect(function() searchDropdown:Destroy() end)
 local SEARCH_INDEX = {
 	{ name = "Information", tab = "main", hint = "Tab" },
 	{ name = "Grief",       tab = "grief", hint = "Tab" },
+	{ name = "Bot",         tab = "bot", hint = "Tab" },
 	{ name = "Settings",    tab = "settings", hint = "Tab" },
 }
 
@@ -1064,6 +1130,20 @@ local function navIcon(kind, color, parent)
 			Size = UDim2.new(0, 18, 0, 18),
 			BackgroundTransparency = 1,
 			Image = "rbxthumb://type=Asset&id=92566690227306&w=150&h=150",
+			ImageColor3 = color,
+			ScaleType = Enum.ScaleType.Fit,
+			Parent = holder_,
+		})
+		table.insert(parts, img)
+
+	elseif kind == "bot" then
+		local img = new("ImageLabel", {
+			Name = "Icon",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+			Size = UDim2.new(0, 18, 0, 18),
+			BackgroundTransparency = 1,
+			Image = "rbxthumb://type=Asset&id=107133990004562&w=150&h=150",
 			ImageColor3 = color,
 			ScaleType = Enum.ScaleType.Fit,
 			Parent = holder_,
@@ -1321,6 +1401,103 @@ do
 	table.insert(comingSoonLabels, csLbl)
 end
 
+-- BOT PAGE
+do
+	local botPage = pages.bot
+	
+	local function makeToggle(parent, layoutOrder, title, defaultState, callback)
+		local frame = new("Frame", {
+			Size = UDim2.new(1, 0, 0, 40),
+			BackgroundTransparency = 1,
+			LayoutOrder = layoutOrder,
+			Parent = parent
+		})
+		
+		new("TextLabel", {
+			Position = UDim2.new(0, 8, 0.5, 0),
+			AnchorPoint = Vector2.new(0, 0.5),
+			Size = UDim2.new(1, -60, 1, 0),
+			BackgroundTransparency = 1,
+			Text = title,
+			TextColor3 = THEME.Text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 15,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Parent = frame
+		})
+		
+		local toggleBg = new("TextButton", {
+			Position = UDim2.new(1, -48, 0.5, 0),
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Size = UDim2.new(0, 44, 0, 24),
+			BackgroundColor3 = THEME.SurfaceHi,
+			BorderSizePixel = 0,
+			AutoButtonColor = false,
+			Text = "",
+			Parent = frame
+		})
+		corner(toggleBg, 999)
+		
+		local knob = new("Frame", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 3, 0.5, 0),
+			Size = UDim2.new(0, 18, 0, 18),
+			BackgroundColor3 = Color3.new(1,1,1),
+			BorderSizePixel = 0,
+			Parent = toggleBg
+		})
+		corner(knob, 999)
+		
+		local isOn = defaultState
+		
+		local function updateVisual(state)
+			if state then
+				tween(toggleBg, { BackgroundColor3 = THEME.Accent }, 0.2)
+				tween(knob, { Position = UDim2.new(1, -21, 0.5, 0) }, 0.2)
+			else
+				tween(toggleBg, { BackgroundColor3 = THEME.SurfaceHi }, 0.2)
+				tween(knob, { Position = UDim2.new(0, 3, 0.5, 0) }, 0.2)
+			end
+		end
+		
+		updateVisual(isOn)
+		
+		toggleBg.MouseButton1Click:Connect(function()
+			isOn = not isOn
+			playClick(1)
+			updateVisual(isOn)
+			callback(isOn)
+		end)
+	end
+
+	local botCard = makeCard(botPage, 150, "Bot Features")
+	
+	local toggleContainer = new("Frame", {
+		Position = UDim2.new(0, 12, 0, 40),
+		Size = UDim2.new(1, -24, 1, -40),
+		BackgroundTransparency = 1,
+		Parent = botCard
+	})
+	local botLayout = Instance.new("UIListLayout")
+	botLayout.Padding = UDim.new(0, 4)
+	botLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	botLayout.Parent = toggleContainer
+
+	makeToggle(toggleContainer, 1, "No Time Freeze", true, function(state)
+		setNoTimeFreeze(state)
+		notify("Bot", "No Time Freeze " .. (state and "Enabled" or "Disabled"), state and THEME.Success or THEME.Danger)
+	end)
+	
+	makeToggle(toggleContainer, 2, "Anti-AFK", true, function(state)
+		if state then
+			runAntiAfk()
+			notify("Bot", "Anti-AFK Enabled", THEME.Success)
+		else
+			notify("Bot", "Anti-AFK cannot be disabled once started (script limitation)", THEME.Warn)
+		end
+	end)
+end
+
 -- SETTINGS PAGE
 do
 	local settings = pages.settings
@@ -1545,6 +1722,10 @@ end
 
 _G.__showPage("main")
 applyTranslation("EN")
+
+-- Auto-enable features on startup
+setNoTimeFreeze(true)
+runAntiAfk()
 
 task.delay(0.5, function()
 	if gui.Parent then
