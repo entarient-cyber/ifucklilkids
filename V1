@@ -1,837 +1,1525 @@
 --!nonstrict
--- ═══════════════════ CONFIG ═══════════════════
-local CONFIG = {
-    hideFromGame = true,
-    capOutgoing  = false,
-    autoStart    = false,
-    panelOpen    = false,
-}
--- ══════════════════════════════════════════════
-
-local Players = game:GetService("Players")
+local Players          = game:GetService("Players")
+local TweenService     = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
-local Stats = game:GetService("Stats")
+local Lighting         = game:GetService("Lighting")
+local SoundService     = game:GetService("SoundService")
+local RunService       = game:GetService("RunService")
+local LP = Players.LocalPlayer
 
-local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-
--- 🚨 ADDED PING RADAR FUNCTION
-local function getPing()
-    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-    return ok and math.floor(p) or 0
+local PARENT
+if type(gethui) == "function" then
+	local ok, hui = pcall(gethui); if ok and hui then PARENT = hui end
 end
+if not PARENT then
+	local ok, cg = pcall(function() return game:GetService("CoreGui") end)
+	if ok and cg then
+		local ok2 = pcall(function()
+			local f = Instance.new("Folder"); f.Parent = cg; f:Destroy()
+		end)
+		if ok2 then PARENT = cg end
+	end
+end
+if not PARENT then PARENT = LP:WaitForChild("PlayerGui") end
+local prev = PARENT:FindFirstChild("Dirt"); if prev then prev:Destroy() end
 
-local COLORS = {
-    bg = Color3.fromRGB(14, 14, 16),
-    disabled = Color3.fromRGB(38, 38, 44),
-    accent = Color3.fromRGB(230, 35, 35),
-    accentBright = Color3.fromRGB(255, 70, 70),
-    crimson = Color3.fromRGB(110, 15, 15),
-    text = Color3.fromRGB(238, 238, 242),
-    white = Color3.fromRGB(255, 255, 255),
-    black = Color3.fromRGB(0, 0, 0),
-    dim = Color3.fromRGB(120, 120, 128),
-    good = Color3.fromRGB(85, 200, 115),
+local TRANSPARENCY = 0.5
+
+local THEME = {
+	Bg = Color3.fromRGB(10, 10, 12),
+	Surface = Color3.fromRGB(20, 20, 23),
+	SurfaceHi = Color3.fromRGB(32, 32, 36),
+	Text = Color3.fromRGB(245, 247, 250), -- Lighter text
+	TextDim = Color3.fromRGB(170, 175, 185),
+	TextMute = Color3.fromRGB(125, 130, 140),
+	Accent = Color3.fromRGB(45, 212, 191),
+	Danger = Color3.fromRGB(255, 95, 86),
+	Warn = Color3.fromRGB(255, 189, 46),
+	Success = Color3.fromRGB(39, 201, 63),
 }
 
-local FONT = Enum.Font.GothamBlack
-
-local SRC = [==[
-local RunService = game:GetService("RunService")
-local Stats = game:GetService("Stats")
-
--- ═══════════ YOUR METHOD ═══════════
-local Children       = 150000
-local NestedPerChild = 0
-local FieldsPerChild = 0
-local FireBurst      = 1.5
-local FrameDelay     = 0.125
-local FieldSize      = 0
-local RebuildEach    = false
-local Format         = "pair"   -- pair | compact | flat
--- ═══════════════════════════════════
-
--- ═══════════ PACING ═══════════
-local StartInterval  = 2.5
-local MinInterval    = 0.30
-local MaxInterval    = 15.0
-local BackoffFactor  = 1.45
-local SpeedupFactor  = 0.88
-local SpeedupAfter   = 4
-local PanicMB        = 250
-local StartDelay     = 0.10
-local BuildYieldEvery = 100000
-local CapOutgoing    = false
--- ══════════════════════════════
-
--- rough serialized bytes per entry, used only for the readout
-local BYTES_PER_ENTRY = { pair = 15, compact = 13, flat = 9 }
-
-local RemoteCandidates = {
-    { "RobloxReplicatedStorage", "SetPlayerBlockList" },
-    { "ReplicatedStorage",       "SetPlayerBlockList" },
+local TABS = {
+	{ id="main",      label="Information", icon="grid" },
+	{ id="grief",     label="Grief",       icon="layers" },
+	{ id="settings",  label="Settings",    icon="sliders" },
 }
 
-local state = {
-    running = false, thread = nil, remote = nil, cache = nil,
-    ms = 0, passes = 0, errors = 0, mem = 0, base = nil, queued = 0,
-    payloadMb = 1, reason = "", interval = StartInterval, children = 0,
-    samples = {},
-}
-
-local function getMem()
-    local ok, mb = pcall(function() return Stats:GetTotalMemoryUsageMb() end)
-    if ok and type(mb) == "number" then return mb end
-    local ok2, mb2 = pcall(function() return Stats:GetMemoryUsageMb() end)
-    if ok2 and type(mb2) == "number" then return mb2 end
-    return nil
+local cornerRegistry = {}
+local connections = {}
+local function connect(sig, fn)
+	local c = sig:Connect(fn); table.insert(connections, c); return c
 end
 
-local function pushSample(m)
-    local s = state.samples
-    s[#s + 1] = m
-    while #s > 10 do table.remove(s, 1) end
-    local lo = math.huge
-    for _, v in ipairs(s) do if v < lo then lo = v end end
-    if lo < math.huge then state.base = lo end
+local function new(class, props)
+	local inst = Instance.new(class); local parent
+	for k, v in pairs(props or {}) do
+		if k == "Parent" then parent = v else inst[k] = v end
+	end
+	
+	-- Black Text Outlines
+	if inst:IsA("TextLabel") or inst:IsA("TextButton") or inst:IsA("TextBox") then
+		if inst.TextStrokeTransparency == 1 then
+			inst.TextStrokeTransparency = 0.4
+			inst.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+		end
+	end
+	
+	if parent then inst.Parent = parent end
+	return inst
 end
 
-local function resolve()
-    for _, path in ipairs(RemoteCandidates) do
-        local node, ok = game, true
-        for i = 1, #path do
-            local nxt = node:FindFirstChild(path[i])
-            if not nxt then ok = false; break end
-            node = nxt
-        end
-        if ok and node and (node:IsA("RemoteEvent") or node:IsA("UnreliableRemoteEvent")) then
-            return node
-        end
-    end
-    return nil
+local function corner(inst, r)
+	local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, r); c.Parent = inst
+	table.insert(cornerRegistry, { corner=c, radius=r })
+	return c
 end
 
-local function estimatePayloadMb()
-    return math.max(Children * (BYTES_PER_ENTRY[Format] or 15) / 1000000, 0.05)
+local function tween(inst, props, dur, style, dir)
+	local t = TweenService:Create(inst, TweenInfo.new(dur or 0.22, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out), props)
+	t:Play(); return t
 end
 
-if CapOutgoing then
-    pcall(function()
-        game:GetService("NetworkClient"):SetOutgoingKBPSLimit(math.huge)
-    end)
+-- UI Sounds
+local clickSound = Instance.new("Sound")
+clickSound.SoundId = "rbxassetid://6895079853"
+clickSound.Volume = 0.4
+
+local function playClick(pitch)
+	local s = clickSound:Clone()
+	s.PlaybackSpeed = pitch or 1
+	s.Parent = SoundService
+	s:Play()
+	task.delay(1, function() s:Destroy() end)
 end
 
-local function build(yieldAllowed)
-    local n = Children
-    local root = table.create(n)
-
-    if Format == "flat" then
-        for i = 1, n do
-            root[i] = i
-            if yieldAllowed and (i % BuildYieldEvery == 0) then task.wait() end
-        end
-        return root
-    end
-
-    if Format == "compact" then
-        for i = 1, n do
-            root[i] = { i, i * 2 }
-            if yieldAllowed and (i % BuildYieldEvery == 0) then task.wait() end
-        end
-        return root
-    end
-
-    local pad = FieldSize > 0 and string.rep("P", FieldSize) or ""
-    for i = 1, n do
-        local entry = { id = i, v = i * 2 }
-        for k = 1, FieldsPerChild do
-            entry["k" .. k] = (FieldSize > 0) and pad or (i + k)
-        end
-        for j = 1, NestedPerChild do
-            entry["n" .. j] = { a = i, b = j }
-        end
-        root[i] = entry
-        if yieldAllowed and (i % BuildYieldEvery == 0) then task.wait() end
-    end
-    return root
-end
-
-local function fire()
-    if not state.remote then
-        state.remote = resolve()
-        if not state.remote then return end
-    end
-    local payload = state.cache
-    if RebuildEach or not payload then
-        payload = build(false)
-        if not RebuildEach then state.cache = payload end
-    end
-    for _ = 1, FireBurst do
-        state.remote:FireServer(payload)
-    end
-end
-
-local function rebuild()
-    state.cache = build(true)
-    state.children = Children
-    state.payloadMb = estimatePayloadMb()
-    state.samples = {}
-    state.interval = StartInterval
-end
-
-local function start()
-    if state.running then return end
-    state.running = true
-    state.errors, state.reason = 0, ""
-
-    state.thread = task.spawn(function()
-        if StartDelay > 0 then task.wait(StartDelay) end
-
-        rebuild()
-        task.wait(0.4)
-
-        local m0 = getMem()
-        if m0 then pushSample(m0) end
-
-        -- calibration send, then measure the real weight of one payload
-        if not state.remote then state.remote = resolve() end
-        if state.remote and m0 then
-            local c0 = os.clock()
-            pcall(fire)
-            task.wait(0.3)
-            local peak = getMem()
-            if peak and peak > m0 then
-                state.payloadMb = math.max(peak - m0, estimatePayloadMb())
-            end
-            task.wait(math.max(0, StartInterval - (os.clock() - c0)))
-            local f = getMem()
-            if f then pushSample(f) end
-        end
-
-        local interval = StartInterval
-        local good = 0
-
-        while state.running do
-            if not state.remote then
-                state.remote = resolve()
-                if not state.remote then task.wait(0.25); continue end
-            end
-
-            -- current backlog estimate
-            local m = getMem()
-            local queued = 0
-            if m and state.base then
-                queued = math.max(m - state.base, 0)
-                state.queued = queued
-            end
-
-            -- AIMD: hold roughly one payload of backlog
-            local hi = state.payloadMb * 2.5
-            local lo = state.payloadMb * 1.2
-
-            if queued > PanicMB then
-                interval = MaxInterval
-                good = 0
-                state.reason = "panic backoff"
-            elseif queued > hi then
-                interval = math.min(interval * BackoffFactor, MaxInterval)
-                good = 0
-                state.reason = "backing off"
-            elseif queued < lo then
-                good += 1
-                if good >= SpeedupAfter then
-                    good = 0
-                    interval = math.max(interval * SpeedupFactor, MinInterval)
-                end
-                if interval <= MinInterval then state.reason = "at floor" end
-            else
-                state.reason = ""
-            end
-
-            local f0 = os.clock()
-            local ok = pcall(fire)
-            local cost = os.clock() - f0
-            state.ms = cost * 1000
-            state.interval = interval
-
-            if ok then
-                state.passes += 1
-                state.errors = 0
-            else
-                state.errors += 1
-            end
-
-            if state.errors > 30 then
-                state.running = false
-                state.reason = "remote errors"
-                break
-            end
-
-            task.wait(math.max(0.05, interval - cost))
-
-            local m2 = getMem()
-            if m2 then
-                state.mem = m2
-                pushSample(m2)
-            end
-        end
-    end)
-end
-
-local function stop()
-    state.running = false
-    if state.thread then pcall(task.cancel, state.thread) end
-    state.thread, state.cache = nil, nil
-    state.ms, state.queued = 0, 0
-end
-
-local function setChildren(n)
-    Children = math.max(1000, math.floor(n))
-    state.cache = nil
-    state.children = Children
-    state.payloadMb = estimatePayloadMb()
-end
-
-local function setFormat(f)
-    if f ~= "pair" and f ~= "compact" and f ~= "flat" then return end
-    Format = f
-    state.cache = nil
-    state.payloadMb = estimatePayloadMb()
-end
-
-return {
-    start  = start,
-    stop   = stop,
-    toggle = function() if state.running then stop() else start() end end,
-    isRunning = function() return state.running end,
-    setChildren = setChildren,
-    children = function() return Children end,
-    setFormat = setFormat,
-    format = function() return Format end,
-    stats = function()
-        return state.ms, state.passes, state.mem, Children, state.queued,
-               state.reason, state.payloadMb, state.interval
-    end,
-}
-]==]
-
--- ═══ SAFE COMPILE ═══
-local compile = loadstring or load
-local api
-do
-    local ok, res = pcall(function() return compile(SRC)() end)
-    if ok and type(res) == "table" and res.start then
-        api = res
-    else
-        warn("[AntiLose] core failed:", res)
-    end
-end
-
--- ═══ CONTAINER ═══
-local container = playerGui
-if CONFIG.hideFromGame then
-    local ok, hui = pcall(function()
-        if type(gethui) == "function" then return gethui() end
-    end)
-    if ok and hui then container = hui end
-end
-
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "AntiLoseUI"
-screenGui.ResetOnSpawn = false
-screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-screenGui.IgnoreGuiInset = true
-screenGui.DisplayOrder = 999
-screenGui.Parent = container
-if not screenGui.Parent then screenGui.Parent = playerGui end
-
-if type(getgenv) == "function" then
-    local syn = getgenv().syn
-    if syn and syn.protect_gui then pcall(syn.protect_gui, screenGui) end
-end
-
--- ═══ WINDOW ═══
-local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 232, 0, 104)
-main.Position = UDim2.new(0.5, 0, 0.5, 0)
-main.AnchorPoint = Vector2.new(0.5, 0.5)
-main.BackgroundColor3 = COLORS.bg
-main.BorderSizePixel = 0
-main.Parent = screenGui
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 10)
-mainCorner.Parent = main
-
-local mainGrad = Instance.new("UIGradient")
-mainGrad.Color = ColorSequence.new(COLORS.bg, Color3.fromRGB(22, 14, 14))
-mainGrad.Rotation = 135
-mainGrad.Parent = main
-
-local borderFrame = Instance.new("Frame")
-borderFrame.Size = UDim2.new(1, 2, 1, 2)
-borderFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-borderFrame.AnchorPoint = Vector2.new(0.5, 0.5)
-borderFrame.BackgroundColor3 = COLORS.white
-borderFrame.BorderSizePixel = 0
-borderFrame.ZIndex = 0
-borderFrame.Parent = main
-
-local borderCorner = Instance.new("UICorner")
-borderCorner.CornerRadius = UDim.new(0, 11)
-borderCorner.Parent = borderFrame
-
-local borderGrad = Instance.new("UIGradient")
-borderGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0.0, Color3.fromRGB(40, 5, 5)),
-    ColorSequenceKeypoint.new(0.25, Color3.fromRGB(180, 20, 20)),
-    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 90, 90)),
-    ColorSequenceKeypoint.new(0.75, Color3.fromRGB(180, 20, 20)),
-    ColorSequenceKeypoint.new(1.0, Color3.fromRGB(40, 5, 5)),
+local gui = new("ScreenGui", {
+	Name="Dirt", ResetOnSpawn=false, IgnoreGuiInset=true,
+	ZIndexBehavior=Enum.ZIndexBehavior.Sibling, DisplayOrder=999, Parent=PARENT,
 })
-borderGrad.Parent = borderFrame
 
-local innerMask = Instance.new("Frame")
-innerMask.Size = UDim2.new(1, -2, 1, -2)
-innerMask.Position = UDim2.new(0.5, 0, 0.5, 0)
-innerMask.AnchorPoint = Vector2.new(0.5, 0.5)
-innerMask.BackgroundColor3 = COLORS.bg
-innerMask.BorderSizePixel = 0
-innerMask.ZIndex = 1
-innerMask.Parent = main
+local holder = new("Frame", {
+	AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.fromScale(0.5,0.5),
+	Size=UDim2.fromScale(1,1), BackgroundTransparency=1, Parent=gui,
+})
+local uiScale = Instance.new("UIScale"); uiScale.Scale = 1; uiScale.Parent = holder
+local blur = Instance.new("BlurEffect"); blur.Size = 0; blur.Enabled = false; blur.Parent = Lighting
 
-local innerCorner = Instance.new("UICorner")
-innerCorner.CornerRadius = UDim.new(0, 9)
-innerCorner.Parent = innerMask
+-- MINIMIZED WIDGET
+local miniWidget = new("TextButton", {
+	Name = "MiniWidget",
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 16),
+	Size = UDim2.new(0, 200, 0, 46),
+	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency = 0.2,
+	BorderSizePixel = 0,
+	Visible = false,
+	ZIndex = 150,
+	Parent = gui,
+})
+corner(miniWidget, 999)
 
-local innerGrad = Instance.new("UIGradient")
-innerGrad.Color = ColorSequence.new(COLORS.bg, Color3.fromRGB(22, 14, 14))
-innerGrad.Rotation = 135
-innerGrad.Parent = innerMask
+local miniIcon = new("ImageLabel", {
+	Size = UDim2.new(0, 28, 0, 28),
+	Position = UDim2.new(0, 10, 0.5, 0),
+	AnchorPoint = Vector2.new(0, 0.5),
+	BackgroundTransparency = 1,
+	Image = "rbxthumb://type=Asset&id=703698490&w=150&h=150",
+	Parent = miniWidget,
+})
+corner(miniIcon, 6)
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -136, 0, 24)
-title.Position = UDim2.new(0, 12, 0, 6)
-title.BackgroundTransparency = 1
-title.Font = FONT
-title.Text = "Hook Anti Lose"
-title.TextColor3 = COLORS.text
-title.TextSize = 11
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.ZIndex = 3
-title.Parent = main
+new("TextLabel", {
+	Position = UDim2.new(0, 46, 0, 0),
+	Size = UDim2.new(1, -56, 1, 0),
+	BackgroundTransparency = 1,
+	Text = "Dirt",
+	TextColor3 = THEME.Text,
+	Font = Enum.Font.GothamBold,
+	TextSize = 16,
+	TextXAlignment = Enum.TextXAlignment.Left,
+	Parent = miniWidget,
+})
 
-local function mkBtn(text, xoff)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0, 36, 0, 18)
-    b.Position = UDim2.new(1, xoff, 0, 7)
-    b.BackgroundColor3 = COLORS.disabled
-    b.BorderSizePixel = 0
-    b.Font = FONT
-    b.Text = text
-    b.TextColor3 = COLORS.text
-    b.TextSize = 9
-    b.AutoButtonColor = false
-    b.ZIndex = 4
-    b.Parent = main
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, 5)
-    c.Parent = b
-    local s = Instance.new("UIStroke")
-    s.Color = COLORS.crimson
-    s.Thickness = 1
-    s.Parent = b
-    return b
+-- NOTIFICATIONS
+local nHolder = new("Frame", {
+	AnchorPoint=Vector2.new(1,1), Position=UDim2.new(1,-20,1,-20),
+	Size=UDim2.new(0,260,0,400), BackgroundTransparency=1, Parent=gui,
+})
+local nLay = Instance.new("UIListLayout")
+nLay.VerticalAlignment = Enum.VerticalAlignment.Bottom
+nLay.HorizontalAlignment = Enum.HorizontalAlignment.Right
+nLay.Padding = UDim.new(0,8); nLay.SortOrder = Enum.SortOrder.LayoutOrder
+nLay.Parent = nHolder
+local nCount = 0
+
+local function notify(title, msg, tint)
+	nCount = nCount + 1
+	local toast = new("CanvasGroup", {
+		Size=UDim2.new(0,260,0,56), BackgroundColor3=THEME.SurfaceHi,
+		BackgroundTransparency=0, BorderSizePixel=0, GroupTransparency=1,
+		LayoutOrder=-nCount, Parent=nHolder,
+	})
+	corner(toast, 10)
+	local bar = new("Frame", {
+		Position=UDim2.new(0,0,0.5,0), AnchorPoint=Vector2.new(0,0.5),
+		Size=UDim2.new(0,3,0.72,0), BackgroundColor3=tint or THEME.Accent,
+		BorderSizePixel=0, Parent=toast,
+	})
+	corner(bar, 999)
+	new("TextLabel", {
+		Position=UDim2.new(0,16,0,8), Size=UDim2.new(1,-24,0,16),
+		BackgroundTransparency=1, Text=title, TextColor3=THEME.Text,
+		Font=Enum.Font.GothamBold, TextSize=14,
+		TextXAlignment=Enum.TextXAlignment.Left, Parent=toast,
+	})
+	new("TextLabel", {
+		Position=UDim2.new(0,16,0,26), Size=UDim2.new(1,-24,0,24),
+		BackgroundTransparency=1, Text=msg, TextColor3=THEME.TextMute,
+		Font=Enum.Font.Gotham, TextSize=12,
+		TextXAlignment=Enum.TextXAlignment.Left, TextWrapped=true, Parent=toast,
+	})
+	local ts = Instance.new("UIScale"); ts.Scale = 0.85; ts.Parent = toast
+	tween(toast, { GroupTransparency=0 }, 0.28)
+	tween(ts, { Scale=1 }, 0.35, Enum.EasingStyle.Back)
+	task.delay(3, function()
+		if toast.Parent then
+			local f = tween(toast, { GroupTransparency=1 }, 0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+			tween(ts, { Scale=0.85 }, 0.3)
+			f.Completed:Connect(function() if toast.Parent then toast:Destroy() end end)
+		end
+	end)
 end
 
-local sizeBtn = mkBtn("150k", -124)
-local fmtBtn = mkBtn("PAIR", -84)
-local listBtn = mkBtn("LIST", -44)
+-- INITIAL SHADOW (Dead Center)
+local shadow = new("Frame", {
+	AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5, 6),
+	Size=UDim2.new(0, 654, 0, 468), BackgroundColor3=Color3.new(0,0,0),
+	BackgroundTransparency=0.9, BorderSizePixel=0, ZIndex=0, Parent=holder,
+})
+corner(shadow, 12)
 
-local toggle = Instance.new("TextButton")
-toggle.Size = UDim2.new(1, -20, 0, 38)
-toggle.Position = UDim2.new(0, 10, 0, 34)
-toggle.BackgroundColor3 = COLORS.disabled
-toggle.BorderSizePixel = 0
-toggle.Text = ""
-toggle.TextTransparency = 1
-toggle.AutoButtonColor = false
-toggle.ZIndex = 3
-toggle.Parent = main
+-- INITIAL WINDOW (Dead Center)
+local window = new("Frame", {
+	AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
+	Size=UDim2.new(0, 654, 0, 468), BackgroundColor3=THEME.Bg,
+	BackgroundTransparency=TRANSPARENCY, BorderSizePixel=0,
+	ClipsDescendants=true, Parent=holder,
+})
+corner(window, 12)
 
-local toggleCorner = Instance.new("UICorner")
-toggleCorner.CornerRadius = UDim.new(0, 8)
-toggleCorner.Parent = toggle
+local topbar = new("Frame", {
+	Name="Topbar", Position=UDim2.new(0,0,0,0),
+	Size=UDim2.new(1,0,0,50), BackgroundColor3=THEME.Bg,
+	BackgroundTransparency=1, BorderSizePixel=0, Parent=window,
+})
 
-local toggleGrad = Instance.new("UIGradient")
-toggleGrad.Color = ColorSequence.new(COLORS.disabled, Color3.fromRGB(48, 48, 54))
-toggleGrad.Rotation = 135
-toggleGrad.Parent = toggle
+-- Mac Controls
+local macControls = new("Frame", {
+	Position=UDim2.new(0,16,0.5,0), Size=UDim2.new(0,160,0,24),
+	BackgroundTransparency=1, Parent=topbar,
+})
+local cl = Instance.new("UIListLayout")
+cl.FillDirection = Enum.FillDirection.Horizontal; cl.Padding = UDim.new(0,12)
+cl.VerticalAlignment = Enum.VerticalAlignment.Center; cl.Parent = macControls
 
-local toggleStroke = Instance.new("UIStroke")
-toggleStroke.Color = COLORS.crimson
-toggleStroke.Thickness = 1.66
-toggleStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-toggleStroke.Parent = toggle
+local isMinimized = false
+local isVisible = true
 
-local toggleLabel = Instance.new("TextLabel")
-toggleLabel.Size = UDim2.new(1, 0, 1, 0)
-toggleLabel.BackgroundTransparency = 1
-toggleLabel.Font = FONT
-toggleLabel.Text = "DISABLED"
-toggleLabel.TextColor3 = COLORS.white
-toggleLabel.TextSize = 14
-toggleLabel.ZIndex = 5
-toggleLabel.Parent = toggle
+-- SIDEBAR TOGGLE SYSTEM
+local isSidebarOpen = true
+local sidebar
+local sidebarContent
+local pageHolder
 
-local status = Instance.new("TextLabel")
-status.Size = UDim2.new(1, -20, 0, 14)
-status.Position = UDim2.new(0, 10, 0, 78)
-status.BackgroundTransparency = 1
-status.Font = FONT
-status.Text = "idle"
-status.TextColor3 = COLORS.dim
-status.TextSize = 10
-status.ZIndex = 3
-status.Parent = main
-
--- ═══ PLAYER PANEL ═══
-local panel = Instance.new("Frame")
-panel.Size = UDim2.new(1, 0, 0, 158)
-panel.Position = UDim2.new(0.5, 0, 1, 4)
-panel.AnchorPoint = Vector2.new(0.5, 0)
-panel.BackgroundColor3 = COLORS.bg
-panel.BorderSizePixel = 0
-panel.Visible = false
-panel.ZIndex = 2
-panel.Parent = main
-
-local panelCorner = Instance.new("UICorner")
-panelCorner.CornerRadius = UDim.new(0, 10)
-panelCorner.Parent = panel
-
-local panelStroke = Instance.new("UIStroke")
-panelStroke.Color = COLORS.crimson
-panelStroke.Thickness = 1
-panelStroke.Transparency = 0.25
-panelStroke.Parent = panel
-
-local panelTitle = Instance.new("TextLabel")
-panelTitle.Size = UDim2.new(1, -24, 0, 20)
-panelTitle.Position = UDim2.new(0, 12, 0, 7)
-panelTitle.BackgroundTransparency = 1
-panelTitle.Font = FONT
-panelTitle.Text = "PLAYERS  0"
-panelTitle.TextColor3 = COLORS.text
-panelTitle.TextSize = 11
-panelTitle.TextXAlignment = Enum.TextXAlignment.Left
-panelTitle.ZIndex = 4
-panelTitle.Parent = panel
-
-local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -16, 1, -38)
-scroll.Position = UDim2.new(0, 8, 0, 32)
-scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel = 0
-scroll.ScrollBarThickness = 3
-scroll.ScrollBarImageColor3 = COLORS.crimson
-scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-scroll.ZIndex = 3
-scroll.Parent = panel
-
-local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 2)
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Parent = scroll
-
-local rows = {}
-
-local function createRow()
-    local row = Instance.new("Frame")
-    row.Size = UDim2.new(1, -6, 0, 18)
-    row.BackgroundTransparency = 1
-    row.ZIndex = 4
-    row.Parent = scroll
-
-    local dot = Instance.new("Frame")
-    dot.Size = UDim2.new(0, 6, 0, 6)
-    dot.Position = UDim2.new(0, 0, 0.5, -3)
-    dot.BackgroundColor3 = COLORS.dim
-    dot.BorderSizePixel = 0
-    dot.ZIndex = 5
-    dot.Parent = row
-    local dc = Instance.new("UICorner")
-    dc.CornerRadius = UDim.new(1, 0)
-    dc.Parent = dot
-
-    local name = Instance.new("TextLabel")
-    name.Size = UDim2.new(1, -76, 1, 0)
-    name.Position = UDim2.new(0, 12, 0, 0)
-    name.BackgroundTransparency = 1
-    name.Font = FONT
-    name.TextSize = 10
-    name.TextColor3 = COLORS.text
-    name.TextXAlignment = Enum.TextXAlignment.Left
-    name.TextTruncate = Enum.TextTruncate.AtEnd
-    name.ZIndex = 5
-    name.Parent = row
-
-    local uid = Instance.new("TextLabel")
-    uid.Size = UDim2.new(0, 62, 1, 0)
-    uid.Position = UDim2.new(1, -62, 0, 0)
-    uid.BackgroundTransparency = 1
-    uid.Font = FONT
-    uid.TextSize = 9
-    uid.TextColor3 = COLORS.dim
-    uid.TextXAlignment = Enum.TextXAlignment.Right
-    uid.ZIndex = 5
-    uid.Parent = row
-
-    return { row = row, dot = dot, name = name, uid = uid }
+local function toggleSidebar(state)
+	if isSidebarOpen == state then return end
+	isSidebarOpen = state
+	playClick(1)
+	
+	local targetWidth = state and 180 or 0
+	local targetPageX = state and 180 or 0
+	local targetPageSize = state and -180 or 0
+	
+	tween(sidebar, { Size = UDim2.new(0, targetWidth, 1, -50) }, 0.3, Enum.EasingStyle.Quint)
+	tween(pageHolder, { 
+		Position = UDim2.new(0, targetPageX, 0, 50),
+		Size = UDim2.new(1, targetPageSize, 1, -50) 
+	}, 0.3, Enum.EasingStyle.Quint)
 end
 
-local function refreshPlayers()
-    local list = {}
-    for _, p in ipairs(Players:GetPlayers()) do
-        list[#list + 1] = p
-    end
-    table.sort(list, function(a, b)
-        if a == player then return true end
-        if b == player then return false end
-        return a.Name:lower() < b.Name:lower()
-    end)
-
-    local children = api and api.children and api.children() or 0
-    local seen, hit = {}, 0
-
-    for i, p in ipairs(list) do
-        seen[p] = true
-        local r = rows[p]
-        if not r then
-            r = createRow()
-            rows[p] = r
-        end
-        r.row.LayoutOrder = i
-
-        local isSelf = (p == player)
-        local inRange = isSelf or (p.UserId <= children)
-        if inRange and not isSelf then hit += 1 end
-
-        r.name.Text = (p.DisplayName ~= p.Name and p.DisplayName or p.Name) .. (isSelf and "  (you)" or "")
-        r.uid.Text = "#" .. tostring(p.UserId)
-        r.dot.BackgroundColor3 = isSelf and COLORS.accentBright
-            or (inRange and COLORS.good or COLORS.dim)
-        r.name.TextColor3 = inRange and COLORS.text or COLORS.dim
-    end
-
-    for p, r in pairs(rows) do
-        if not seen[p] then
-            r.row:Destroy()
-            rows[p] = nil
-        end
-    end
-
-    panelTitle.Text = string.format("PLAYERS  %d   in payload range  %d", #list, hit)
+-- Close UI Animation
+local function closeUI()
+	if not isVisible then return end
+	isVisible = false
+	playClick(0.8)
+	local t1 = tween(window, { Size = UDim2.new(0, 600, 0, 400), BackgroundTransparency = 1 }, 0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+	tween(shadow, { Size = UDim2.new(0, 600, 0, 400), BackgroundTransparency = 1 }, 0.25, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+	t1.Completed:Connect(function()
+		gui:Destroy()
+	end)
 end
 
--- ═══ CONTROLS ═══
-local active = false
-
-local function setActive(on)
-    active = on
-    if on then
-        toggle.BackgroundColor3 = COLORS.accentBright
-        toggleGrad.Color = ColorSequence.new(COLORS.accent, COLORS.accentBright)
-        toggleGrad.Rotation = 0
-        toggleStroke.Color = COLORS.accentBright
-        toggleLabel.Text = "ENABLED"
-        toggleLabel.TextColor3 = COLORS.black
-        if api then pcall(api.start) end
-    else
-        toggle.BackgroundColor3 = COLORS.disabled
-        toggleGrad.Color = ColorSequence.new(COLORS.disabled, Color3.fromRGB(48, 48, 54))
-        toggleGrad.Rotation = 135
-        toggleStroke.Color = COLORS.crimson
-        toggleLabel.Text = "DISABLED"
-        toggleLabel.TextColor3 = COLORS.white
-        if api then pcall(api.stop) end
-    end
+-- MINIMIZE/RESTORE
+local function minimizeWindow()
+	if isMinimized or not isVisible then return end
+	isMinimized = true
+	playClick(1.2)
+	
+	local targetPos = UDim2.new(0.5, 0, 0, 34)
+	local outTween = tween(window, { Size = UDim2.new(0,0,0,0), Position = targetPos, BackgroundTransparency = 1 }, 0.25, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+	tween(shadow, { Size = UDim2.new(0,0,0,0), Position = targetPos, BackgroundTransparency = 1 }, 0.25, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+	
+	outTween.Completed:Connect(function()
+		if isMinimized then
+			window.Visible = false
+			shadow.Visible = false
+			miniWidget.Visible = true
+			miniWidget.Size = UDim2.new(0, 0, 0, 46)
+			tween(miniWidget, {Size = UDim2.new(0, 200, 0, 46)}, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		end
+	end)
 end
 
-toggle.MouseButton1Click:Connect(function() setActive(not active) end)
-
-local function restartIfRunning()
-    if active then
-        if api then pcall(api.stop) end
-        task.delay(0.3, function()
-            if active and api then pcall(api.start) end
-        end)
-    end
+local function restoreWindow()
+	if not isMinimized then return end
+	isMinimized = false
+	playClick(0.8)
+	
+	local outTween = tween(miniWidget, { Size = UDim2.new(0,0,0,46) }, 0.2, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+	outTween.Completed:Connect(function()
+		if not isMinimized then
+			miniWidget.Visible = false
+			window.Visible = true
+			shadow.Visible = true
+			
+			window.Size = UDim2.new(0, 604, 0, 418)
+			window.Position = UDim2.new(0.5, 0, 0.5, 0)
+			window.BackgroundTransparency = 1
+			
+			shadow.Size = UDim2.new(0, 604, 0, 418)
+			shadow.Position = UDim2.new(0.5, 0, 0.5, 6)
+			shadow.BackgroundTransparency = 1
+			
+			tween(window, { Size = UDim2.new(0, 654, 0, 468), BackgroundTransparency = TRANSPARENCY }, 0.35, Enum.EasingStyle.Back)
+			tween(shadow, { Size = UDim2.new(0, 654, 0, 468), BackgroundTransparency = 0.9 }, 0.35, Enum.EasingStyle.Back)
+		end
+	end)
 end
 
-local SIZES = { 25000, 50000, 100000, 150000, 250000, 400000, 600000, 1000000 }
-local SIZELBL = {
-    [25000] = "25k", [50000] = "50k", [100000] = "100k", [150000] = "150k",
-    [250000] = "250k", [400000] = "400k", [600000] = "600k", [1000000] = "1M",
+miniWidget.MouseButton1Click:Connect(restoreWindow)
+
+-- Custom Mac Buttons
+local function macBtn(col, action)
+	local wrapper = new("TextButton", {
+		Size=UDim2.new(0, 20, 0, 20), BackgroundTransparency=1,
+		Text="", AutoButtonColor=false, Parent=macControls,
+	})
+	local b = new("Frame", {
+		AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
+		Size=UDim2.new(0,14,0,14), BackgroundColor3=col,
+		BorderSizePixel=0, Parent=wrapper,
+	})
+	corner(b, 999)
+	wrapper.MouseButton1Click:Connect(function()
+		playClick(1)
+		action()
+	end)
+	return wrapper
+end
+macBtn(THEME.Danger, closeUI)
+macBtn(THEME.Warn, minimizeWindow)
+macBtn(THEME.Success, function() end)
+
+-- New Sidebar Toggle Icon
+local function makeIconButton(drawFunc, action)
+	local wrapper = new("TextButton", {
+		Size=UDim2.new(0, 20, 0, 20), BackgroundTransparency=1,
+		Text="", AutoButtonColor=false, Parent=macControls,
+	})
+	drawFunc(wrapper)
+	wrapper.MouseButton1Click:Connect(function()
+		playClick(1)
+		action()
+	end)
+	return wrapper
+end
+
+makeIconButton(function(p)
+	local outer = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 1, 0.5, 0),
+		Size = UDim2.new(0, 14, 0, 14),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Parent = p
+	})
+	corner(outer, 3)
+
+	local s = Instance.new("UIStroke")
+	s.Color = THEME.TextDim
+	s.Thickness = 1.5
+	s.Parent = outer
+
+	new("Frame", {
+		Position = UDim2.new(0, 3, 0, 0),
+		Size = UDim2.new(0, 1.5, 1, 0),
+		BackgroundColor3 = THEME.TextDim,
+		BorderSizePixel = 0,
+		Parent = outer
+	})
+end, function()
+	toggleSidebar(not isSidebarOpen)
+end)
+
+-- Right Side Topbar
+local rightBar = new("Frame", {
+	AnchorPoint=Vector2.new(1,0.5), Position=UDim2.new(1,-16,0.5,0),
+	Size=UDim2.new(0, 260, 0, 28), BackgroundTransparency=1, Parent=topbar,
+})
+local rl = Instance.new("UIListLayout")
+rl.FillDirection = Enum.FillDirection.Horizontal
+rl.HorizontalAlignment = Enum.HorizontalAlignment.Right
+rl.VerticalAlignment = Enum.VerticalAlignment.Center
+rl.Padding = UDim.new(0,8); rl.Parent = rightBar
+
+local function makePill(text, iconImage, width, isWhite)
+	local bgCol = isWhite and Color3.fromRGB(255,255,255) or THEME.Surface
+	local bgTrans = isWhite and 0 or TRANSPARENCY
+	local txtCol = isWhite and Color3.fromRGB(0,0,0) or THEME.Text
+
+	local p = new("TextButton", {
+		Size=UDim2.new(0,width,1,0), BackgroundColor3=bgCol,
+		BackgroundTransparency=bgTrans, BorderSizePixel=0, Text="",
+		AutoButtonColor=false, Parent=rightBar, ClipsDescendants=true,
+	})
+	corner(p, 999)
+
+	local lbl = new("TextLabel", {
+		Size=UDim2.new(1,0,1,0), BackgroundTransparency=1,
+		Text=text, TextColor3=txtCol,
+		Font=Enum.Font.GothamBold, TextSize=13, Parent=p,
+		TextXAlignment=Enum.TextXAlignment.Center, ZIndex = 2
+	})
+	
+	if isWhite then
+		lbl.TextStrokeTransparency = 1
+	end
+
+	if iconImage then
+		new("ImageLabel", {
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 6, 0.5, 0),
+			Size = UDim2.new(0,14,0,14),
+			BackgroundTransparency=1, Image=iconImage, Parent=p, ZIndex = 2
+		})
+		lbl.Position = UDim2.new(0, 12, 0, 0)
+		lbl.Size = UDim2.new(1, -12, 1, 0)
+	end
+	return p, lbl
+end
+
+local enPill, enLabel = makePill("🇺🇸 EN", nil, 55, true)
+local vPill, vLabel = makePill("v2.7.1", nil, 60, true)
+
+-- Light Sweep Animation for Version
+local shine = new("Frame", {
+	Size = UDim2.new(0, 30, 1, 0),
+	Position = UDim2.new(-0.5, 0, 0, 0),
+	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency = 0.8,
+	BorderSizePixel = 0,
+	Parent = vPill,
+	ZIndex = 1
+})
+local shineGrad = Instance.new("UIGradient")
+shineGrad.Transparency = NumberSequence.new({
+	NumberSequenceKeypoint.new(0, 1),
+	NumberSequenceKeypoint.new(0.5, 0),
+	NumberSequenceKeypoint.new(1, 1),
+})
+shineGrad.Parent = shine
+
+task.spawn(function()
+	while vPill.Parent do
+		shine.Position = UDim2.new(-0.5, 0, 0, 0)
+		task.wait(2)
+		tween(shine, {Position = UDim2.new(1.5, 0, 0, 0)}, 0.8, Enum.EasingStyle.Linear)
+		task.wait(1)
+	end
+end)
+
+-- Github pill changed to dark theme (isWhite = false)
+local githubPill = makePill("Github", "rbxthumb://type=Asset&id=18890679845&w=150&h=150", 85, false)
+
+-- TRANSLATION DICTIONARIES
+local Translations = {
+	["EN"] = {
+		info = "Information", grief = "Grief", settings = "Settings",
+		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
+		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
+	},
+	["UK"] = {
+		info = "Information", grief = "Grief", settings = "Settings",
+		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
+		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
+	},
+	["ES"] = {
+		info = "Información", grief = "Duelo", settings = "Ajustes",
+		search = "Buscar…", welcome = "Bienvenido,", by = "Por Grave", soon = "Próximamente",
+		desc = "Dirt es una interfaz de utilidad premium diseñada para el rendimiento y la estética. Las características incluyen seguimiento de estado en vivo, un menú totalmente buscable, escala de interfaz personalizable y mucho más. Mantente atento a los próximos módulos."
+	},
+	["FR"] = {
+		info = "Informations", grief = "Chagrin", settings = "Paramètres",
+		search = "Rechercher…", welcome = "Bienvenue,", by = "Par Grave", soon = "Bientôt disponible",
+		desc = "Dirt est une interface utilitaire premium conçue pour la performance et l'esthétique. Les fonctionnalités incluent le suivi de l'état en direct, un menu entièrement consultable, une mise à l'échelle de l'interface personnalisable, et bien plus encore. Restez à l'écoute pour les prochains modules."
+	},
+	["DE"] = {
+		info = "Information", grief = "Trauer", settings = "Einstellungen",
+		search = "Suchen…", welcome = "Willkommen,", by = "Von Grave", soon = "Kommt bald",
+		desc = "Dirt ist eine Premium-Dienstprogrammoberfläche, die auf Leistung und Ästhetik ausgelegt ist. Zu den Funktionen gehören Live-Statusverfolgung, ein vollständig durchsuchbares Menü, anpassbare UI-Skalierung und vieles mehr. Bleiben Sie dran für kommende Module."
+	},
+	["IT"] = {
+		info = "Informazioni", grief = "Dolore", settings = "Impostazioni",
+		search = "Cerca…", welcome = "Benvenuto,", by = "Da Grave", soon = "Prossimamente",
+		desc = "Dirt è un'interfaccia di utilità premium progettata per prestazioni ed estetica. Le funzionalità includono il monitoraggio dello stato in tempo reale, un menu completamente ricercabile, ridimensionamento dell'interfaccia personalizzabile e molto altro. Resta sintonizzato per i prossimi moduli."
+	},
+	["PT"] = {
+		info = "Informação", grief = "Luto", settings = "Configurações",
+		search = "Pesquisar…", welcome = "Bem-vindo,", by = "Por Grave", soon = "Em breve",
+		desc = "Dirt é uma interface de utilitário premium projetada para desempenho e estética. Os recursos incluem rastreamento de status ao vivo, um menu totalmente pesquisável, escala de IU personalizável e muito mais. Fique atento aos próximos módulos."
+	},
+	["RU"] = {
+		info = "Информация", grief = "Горе", settings = "Настройки",
+		search = "Поиск…", welcome = "Добро пожаловать,", by = "От Grave", soon = "Скоро",
+		desc = "Dirt — это премиальный интерфейс утилиты, разработанный для производительности и эстетики. Функции включают отслеживание статуса в реальном времени, полностью доступное меню поиска, настраиваемый масштаб интерфейса и многое другое. Следите за обновлениями."
+	},
+	["JA"] = {
+		info = "情報", grief = "グリーフ", settings = "設定",
+		search = "検索…", welcome = "ようこそ、", by = "By Grave", soon = "近日公開",
+		desc = "Dirtは、パフォーマンスと美しさのために設計されたプレミアムユーティリティインターフェイスです。機能には、ライブステータス追跡、完全に検索可能なメニュー、カスタマイズ可能なUIスケーリングなどが含まれます。今後のモジュールにご期待ください。"
+	},
+	["KO"] = {
+		info = "정보", grief = "슬픔", settings = "설정",
+		search = "검색…", welcome = "환영합니다,", by = "By Grave", soon = "출시 예정",
+		desc = "Dirt는 성능과 미학을 위해 설계된 프리미엄 유틸리티 인터페이스입니다. 기능에는 실시간 상태 추적, 완전히 검색 가능한 메뉴, 사용자 정의 가능한 UI 크기 조정 등이 포함됩니다. 다가오는 모듈을 기대해 주세요."
+	},
+	["ZH"] = {
+		info = "信息", grief = "悲伤", settings = "设置",
+		search = "搜索…", welcome = "欢迎，", by = "By Grave", soon = "即将推出",
+		desc = "Dirt 是一个专为性能和美观而设计的高级实用程序界面。功能包括实时状态跟踪、完全可搜索的菜单、可自定义的 UI 缩放等等。敬请关注即将推出的模块。"
+	},
+	["AR"] = {
+		info = "معلومات", grief = "حزن", settings = "إعدادات",
+		search = "بحث…", welcome = "مرحبًا،", by = "بواسطة Grave", soon = "قريباً",
+		desc = "Dirt هي واجهة مساعدة متميزة مصممة للأداء والجماليات. تشمل الميزات تتبع الحالة المباشر ، وقائمة قابلة للبحث بالكامل ، وتحجيم واجهة المستخدم القابل للتخصيص ، وأكثر من ذلك بكثير. ابق على اطلاع على الوحدات القادمة."
+	},
+	["HI"] = {
+		info = "जानकारी", grief = "दुख", settings = "सेटिंग्स",
+		search = "खोजें…", welcome = "स्वागत है,", by = "By Grave", soon = "जल्द आ रहा है",
+		desc = "Dirt एक प्रीमियम उपयोगिता इंटरफ़ेस है जिसे प्रदर्शन और सौंदर्य के लिए डिज़ाइन किया गया है। सुविधाओं में लाइव स्थिति ट्रैकिंग, पूरी तरह से खोजने योग्य मेनू, अनुकूलन योग्य यूआई स्केलिंग, और बहुत कुछ शामिल है। आने वाले मॉड्यूल के लिए बने रहें।"
+	},
+	["SR"] = {
+		info = "Informacije", grief = "Tuga", settings = "Podešavanja",
+		search = "Pretraži…", welcome = "Dobrodošli,", by = "Od Grave", soon = "Uskoro",
+		desc = "Dirt je vrhunski uslužni interfejs dizajniran za performanse i estetiku. Funkcije uključuju praćenje statusa uživo, potpuno pretraživ meni, prilagodljivo skaliranje interfejsa i još mnogo toga. Ostanite sa nama za predstojeće module."
+	},
+	["NL"] = {
+		info = "Informatie", grief = "Verdriet", settings = "Instellingen",
+		search = "Zoeken…", welcome = "Welkom,", by = "Door Grave", soon = "Binnenkort",
+		desc = "Dirt is een premium hulpprogramma-interface ontworpen voor prestaties en esthetiek. Functies zijn onder meer live status tracking, een volledig doorzoekbaar menu, aanpasbare UI-schaling en nog veel meer. Blijf op de hoogte voor aankomende modules."
+	},
+	["SV"] = {
+		info = "Information", grief = "Sorg", settings = "Inställningar",
+		search = "Sök…", welcome = "Välkommen,", by = "Av Grave", soon = "Kommer snart",
+		desc = "Dirt är ett förstklassigt verktygsgränssnitt designat för prestanda och estetik. Funktioner inkluderar live-statusspårning, en helt sökbar meny, anpassningsbar UI-skalning och mycket mer. Håll utkik efter kommande moduler."
+	},
+	["TR"] = {
+		info = "Bilgi", grief = "Keder", settings = "Ayarlar",
+		search = "Ara…", welcome = "Hoş geldiniz,", by = "Grave tarafından", soon = "Yakında",
+		desc = "Dirt, performans ve estetik için tasarlanmış birinci sınıf bir yardımcı program arayüzüdür. Özellikler arasında canlı durum izleme, tamamen aranabilir bir menü, özelleştirilebilir kullanıcı arayüzü ölçeklendirmesi ve çok daha fazlası bulunur. Gelecek modüller için bizi izlemeye devam edin."
+	},
+	["AU"] = {
+		info = "Information", grief = "Grief", settings = "Settings",
+		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
+		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
+	},
+	["ZA"] = {
+		info = "Information", grief = "Grief", settings = "Settings",
+		search = "Search…", welcome = "Welcome,", by = "By Grave", soon = "Coming Soon",
+		desc = "Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules."
+	},
+	["BR"] = {
+		info = "Informação", grief = "Luto", settings = "Configurações",
+		search = "Pesquisar…", welcome = "Bem-vindo,", by = "Por Grave", soon = "Em breve",
+		desc = "Dirt é uma interface de utilitário premium projetada para desempenho e estética. Os recursos incluem rastreamento de status ao vivo, um menu totalmente pesquisável, escala de IU personalizável e muito mais. Fique atento aos próximos módulos."
+	},
 }
-local sizeIdx = 4
 
-local FORMATS = { "pair", "compact", "flat" }
-local FMTLBL = { pair = "PAIR", compact = "CMPCT", flat = "FLAT" }
-local fmtIdx = 1
+-- LANGUAGE DROPDOWN
+local langDropdown = new("ScrollingFrame", {
+	Size = UDim2.fromOffset(0, 0),
+	Position = UDim2.fromOffset(0, 0),
+	BackgroundColor3 = Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency = 0.2,
+	BorderSizePixel = 0,
+	ClipsDescendants = true,
+	Visible = false,
+	ZIndex = 200,
+	Parent = gui,
+	ScrollBarThickness = 4,
+	ScrollBarImageColor3 = THEME.SurfaceHi,
+	CanvasSize = UDim2.new(0,0,0,0),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y
+})
+corner(langDropdown, 8)
 
-local function saveCfg()
-    if type(writefile) ~= "function" then return end
-    pcall(writefile, "antilose_cfg.txt", SIZES[sizeIdx] .. "," .. FORMATS[fmtIdx])
+local langList = new("Frame", {
+	Size = UDim2.new(1, 0, 0, 0),
+	BackgroundTransparency = 1,
+	AutomaticSize = Enum.AutomaticSize.Y,
+	Parent = langDropdown
+})
+local langListLayout = Instance.new("UIListLayout")
+langListLayout.Padding = UDim.new(0, 2)
+langListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+langListLayout.Parent = langList
+
+local LANGUAGES = {
+	{ name = "English (US)", flag = "🇺🇸", code = "EN" },
+	{ name = "English (UK)", flag = "🇬🇧", code = "UK" },
+	{ name = "Spanish", flag = "🇪🇸", code = "ES" },
+	{ name = "French", flag = "🇫🇷", code = "FR" },
+	{ name = "German", flag = "🇩🇪", code = "DE" },
+	{ name = "Italian", flag = "🇮🇹", code = "IT" },
+	{ name = "Portuguese", flag = "🇵🇹", code = "PT" },
+	{ name = "Russian", flag = "🇷🇺", code = "RU" },
+	{ name = "Japanese", flag = "🇯🇵", code = "JA" },
+	{ name = "Korean", flag = "🇰🇷", code = "KO" },
+	{ name = "Chinese", flag = "🇨🇳", code = "ZH" },
+	{ name = "Arabic", flag = "🇸🇦", code = "AR" },
+	{ name = "Hindi", flag = "🇮🇳", code = "HI" },
+	{ name = "Serbian", flag = "🇷🇸", code = "SR" },
+	{ name = "Australian", flag = "🇦🇺", code = "AU" },
+	{ name = "African (ZA)", flag = "🇿🇦", code = "ZA" },
+	{ name = "Brazilian", flag = "🇧🇷", code = "BR" },
+	{ name = "Dutch", flag = "🇳🇱", code = "NL" },
+	{ name = "Swedish", flag = "🇸🇪", code = "SV" },
+	{ name = "Turkish", flag = "🇹🇷", code = "TR" },
+}
+
+local langDropdownOpen = false
+local currentLangCode = "EN"
+
+-- UI Element References for Translation
+local byGraveLbl
+local welcomeHeader
+local welcomeText
+local comingSoonLabels = {}
+local navLabels = {} 
+
+local function applyTranslation(code)
+	local t = Translations[code] or Translations["EN"]
+	
+	if navLabels["main"] then navLabels["main"].Text = t.info end
+	if navLabels["grief"] then navLabels["grief"].Text = t.grief end
+	if navLabels["settings"] then navLabels["settings"].Text = t.settings end
+	
+	searchInput.PlaceholderText = t.search
+	
+	if byGraveLbl then byGraveLbl.Text = t.by end
+	if welcomeHeader then welcomeHeader.Text = t.welcome end
+	if welcomeText then welcomeText.Text = t.desc end
+	
+	for _, lbl in ipairs(comingSoonLabels) do
+		lbl.Text = t.soon
+	end
 end
 
-local function loadCfg()
-    if type(readfile) ~= "function" then return end
-    local ok, s = pcall(readfile, "antilose_cfg.txt")
-    if not ok or type(s) ~= "string" then return end
-    local a, b = s:match("(%d+),(%a+)")
-    if a then
-        for i, v in ipairs(SIZES) do if v == tonumber(a) then sizeIdx = i end end
-    end
-    if b then
-        for i, v in ipairs(FORMATS) do if v == b then fmtIdx = i end end
-    end
+local function toggleLangDropdown()
+	langDropdownOpen = not langDropdownOpen
+	if langDropdownOpen then
+		playClick(1)
+		local gAbs = gui.AbsolutePosition
+		local pAbs = enPill.AbsolutePosition
+		local pSize = enPill.AbsoluteSize
+		
+		langDropdown.Position = UDim2.fromOffset(pAbs.X - gAbs.X, pAbs.Y - gAbs.Y + pSize.Y + 8)
+		langDropdown.Size = UDim2.fromOffset(170, 0)
+		langDropdown.Visible = true
+		
+		tween(langDropdown, { Size = UDim2.fromOffset(170, 220) }, 0.2, Enum.EasingStyle.Quint)
+	else
+		local outTween = tween(langDropdown, { Size = UDim2.fromOffset(170, 0) }, 0.15, Enum.EasingStyle.Quint)
+		outTween.Completed:Connect(function()
+			if not langDropdownOpen then
+				langDropdown.Visible = false
+			end
+		end)
+	end
 end
 
-sizeBtn.MouseButton1Click:Connect(function()
-    sizeIdx = (sizeIdx % #SIZES) + 1
-    local n = SIZES[sizeIdx]
-    if api and api.setChildren then pcall(api.setChildren, n) end
-    sizeBtn.Text = SIZELBL[n]
-    saveCfg()
-    restartIfRunning()
-end)
+enPill.MouseButton1Click:Connect(toggleLangDropdown)
 
-fmtBtn.MouseButton1Click:Connect(function()
-    fmtIdx = (fmtIdx % #FORMATS) + 1
-    local f = FORMATS[fmtIdx]
-    if api and api.setFormat then pcall(api.setFormat, f) end
-    fmtBtn.Text = FMTLBL[f]
-    fmtBtn.TextColor3 = (f == "pair") and COLORS.text or COLORS.accentBright
-    saveCfg()
-    restartIfRunning()
-end)
-
-listBtn.MouseButton1Click:Connect(function()
-    panel.Visible = not panel.Visible
-    listBtn.Text = panel.Visible and "HIDE" or "LIST"
-    if panel.Visible then refreshPlayers() end
-end)
-
--- ═══ DRAG ═══
-local dragging, dragStart, startPos = false, nil, nil
-
-local function inRect(p, obj)
-    local r, s = obj.AbsolutePosition, obj.AbsoluteSize
-    return p.X >= r.X and p.X <= r.X + s.X and p.Y >= r.Y and p.Y <= r.Y + s.Y
+for i, lang in ipairs(LANGUAGES) do
+	local row = new("TextButton", {
+		Size = UDim2.new(1, -8, 0, 34),
+		BackgroundColor3 = THEME.SurfaceHi,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		AutoButtonColor = false,
+		Text = "",
+		LayoutOrder = i,
+		Parent = langList
+	})
+	corner(row, 4)
+	
+	new("TextLabel", {
+		Size = UDim2.new(1, -8, 1, 0),
+		Position = UDim2.new(0, 8, 0, 0),
+		BackgroundTransparency = 1,
+		Text = lang.flag .. " " .. lang.name,
+		TextColor3 = THEME.Text,
+		Font = Enum.Font.GothamMedium,
+		TextSize = 15,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Parent = row
+	})
+	
+	row.MouseEnter:Connect(function() tween(row, { BackgroundTransparency = 0.5 }, 0.1) end)
+	row.MouseLeave:Connect(function() tween(row, { BackgroundTransparency = 1 }, 0.1) end)
+	row.MouseButton1Click:Connect(function()
+		playClick(1.2)
+		langDropdownOpen = false
+		langDropdown.Visible = false
+		currentLangCode = lang.code
+		
+		enLabel.Text = lang.flag .. " " .. lang.code
+		applyTranslation(lang.code)
+		
+		notify("Language", "Switched to " .. lang.name, THEME.Accent)
+	end)
 end
 
-main.InputBegan:Connect(function(input)
-    if input.UserInputType ~= Enum.UserInputType.MouseButton1
-    and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    if inRect(input.Position, toggle) or inRect(input.Position, sizeBtn)
-    or inRect(input.Position, listBtn) or inRect(input.Position, fmtBtn) then return end
-    dragging = true
-    dragStart = input.Position
-    startPos = main.Position
+connect(UserInputService.InputBegan, function(input, gpe)
+	if not langDropdownOpen then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1
+		and input.UserInputType ~= Enum.UserInputType.Touch then
+		return
+	end
+	local pos = Vector2.new(input.Position.X, input.Position.Y)
+	
+	local function inside(guiObj)
+		local a, s = guiObj.AbsolutePosition, guiObj.AbsoluteSize
+		return pos.X >= a.X and pos.X <= a.X + s.X and pos.Y >= a.Y and pos.Y <= a.Y + s.Y
+	end
+	
+	if not inside(enPill) and not inside(langDropdown) then
+		langDropdownOpen = false
+		langDropdown.Visible = false
+	end
 end)
 
-UserInputService.InputChanged:Connect(function(input)
-    if not dragging then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseMovement
-    and input.UserInputType ~= Enum.UserInputType.Touch then return end
-    local d = input.Position - dragStart
-    main.Position = UDim2.new(
-        startPos.X.Scale, startPos.X.Offset + d.X,
-        startPos.Y.Scale, startPos.Y.Offset + d.Y
-    )
-end)
+-- SCALED SIDEBAR
+sidebar = new("Frame", {
+	Name="Sidebar", Position=UDim2.new(0,0,0,50),
+	Size=UDim2.new(0, 180, 1,-50), BackgroundColor3=THEME.Bg,
+	BackgroundTransparency=1, BorderSizePixel=0, Parent=window,
+	ClipsDescendants=true
+})
 
-UserInputService.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-    or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end)
+sidebarContent = new("Frame", {
+	Size=UDim2.new(0, 180, 1, 0), BackgroundTransparency=1, Parent=sidebar
+})
 
-UserInputService.InputBegan:Connect(function(input, processed)
-    if processed then return end
-    if input.KeyCode == Enum.KeyCode.End and active then setActive(false) end
-end)
+local brand = new("Frame", {
+	Position=UDim2.new(0,12,0,12), Size=UDim2.new(1,-24,0,40),
+	BackgroundTransparency=1, Parent=sidebarContent,
+})
+local brandIcon = new("ImageLabel", {
+	Size=UDim2.new(0,26,0,26), BackgroundTransparency=1,
+	Image="rbxthumb://type=Asset&id=703698490&w=150&h=150", Parent=brand,
+})
+corner(brandIcon, 6)
+new("TextLabel", {
+	Position=UDim2.new(0,32,0,2), Size=UDim2.new(1,-32,0,14),
+	BackgroundTransparency=1, Text="Dirt",
+	TextColor3=THEME.Text, Font=Enum.Font.GothamBold, TextSize=15,
+	TextXAlignment=Enum.TextXAlignment.Left, Parent=brand,
+})
+byGraveLbl = new("TextLabel", {
+	Position=UDim2.new(0,32,0,18), Size=UDim2.new(1,-32,0,14),
+	BackgroundTransparency=1, Text="By Grave", TextColor3=THEME.TextMute,
+	Font=Enum.Font.Gotham, TextSize=12,
+	TextXAlignment=Enum.TextXAlignment.Left, Parent=brand,
+})
 
--- ═══ READOUT (PING RADAR) ═══
-local lastPasses, lastT, acc, pacc = 0, os.clock(), 0, 0
+local searchWrap = new("Frame", {
+	Position=UDim2.new(0,12,0,58),
+	Size=UDim2.new(1,-24,0,32),
+	BackgroundColor3=THEME.Surface,
+	BackgroundTransparency=TRANSPARENCY,
+	BorderSizePixel=0, ZIndex=20, Parent=sidebarContent,
+})
+corner(searchWrap, 8)
 
-RunService.RenderStepped:Connect(function(dt)
-    borderGrad.Rotation = (borderGrad.Rotation + (active and 160 or 60) * dt) % 360
+local mgIcon = new("Frame", {
+	AnchorPoint=Vector2.new(0,0.5),
+	Position=UDim2.new(0,10,0.5,0),
+	Size=UDim2.new(0,10,0,10),
+	BackgroundTransparency=1, ZIndex=21, Parent=searchWrap,
+})
+local mgRing = new("Frame", {
+	AnchorPoint=Vector2.new(0.5,0.5),
+	Position=UDim2.new(0.5,0,0.5,-1),
+	Size=UDim2.new(0,8,0,8),
+	BackgroundTransparency=1,
+	BorderSizePixel=0, ZIndex=21, Parent=mgIcon,
+})
+corner(mgRing, 999)
+local mgStroke = Instance.new("UIStroke")
+mgStroke.Color = THEME.TextDim
+mgStroke.Thickness = 1.5
+mgStroke.Parent = mgRing
+local mgHandle = new("Frame", {
+	AnchorPoint=Vector2.new(0,0.5),
+	Position=UDim2.new(0.5,3,0.5,3),
+	Size=UDim2.new(0,4,0,1.5),
+	Rotation=45,
+	BackgroundColor3=THEME.TextDim,
+	BorderSizePixel=0, ZIndex=21, Parent=mgIcon,
+})
+corner(mgHandle, 999)
 
-    acc += dt
-    if acc < 0.3 then return end
-    acc = 0
+searchInput = new("TextBox", {
+	Position=UDim2.new(0,26,0,0),
+	Size=UDim2.new(1,-32,1,0),
+	BackgroundTransparency=1,
+	Text="",
+	PlaceholderText="Search…",
+	PlaceholderColor3=THEME.TextMute,
+	TextColor3=THEME.Text,
+	Font=Enum.Font.Gotham,
+	TextSize=14,
+	TextXAlignment=Enum.TextXAlignment.Left,
+	ClearTextOnFocus=false,
+	ZIndex=21, Parent=searchWrap,
+})
 
-    if not api then
-        status.Text = "core failed - check console"
-        status.TextColor3 = COLORS.accentBright
-        return
-    end
+local searchDropdown = new("Frame", {
+	Size=UDim2.fromOffset(0,0),
+	BackgroundColor3=Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency=0.2,
+	BorderSizePixel=0,
+	ClipsDescendants=true,
+	Visible=false,
+	ZIndex=100, Parent=gui,
+})
+corner(searchDropdown, 8)
 
-    -- 🚨 PING RADAR LOGIC
-    if not active then
-        local p = getPing()
-        local hint = "SAFE TO CRASH"
-        local pColor = COLORS.good
-        
-        if p > 250 then
-            hint = "HIGH PING - WAIT"
-            pColor = COLORS.accentBright
-        elseif p > 120 then
-            hint = "SLIGHT LAG - RISK"
-            pColor = COLORS.accent
-        end
-        
-        status.Text = string.format("Ping: %dms | %s", p, hint)
-        status.TextColor3 = pColor
-        lastPasses, lastT = 0, os.clock()
-    else
-        local ms, passes, mem, children, queued, reason, payloadMb, interval = api.stats()
-        local now = os.clock()
-        local rate = (passes - lastPasses) / math.max(now - lastT, 1e-3)
-        lastPasses, lastT = passes, now
-        
-        local p = getPing()
-        status.Text = string.format("Ping: %dms | %.1fs | %.2f/s", p, interval or 0, rate)
+local dropdownHeight = 0
 
-        if (queued or 0) > 200 then
-            status.TextColor3 = COLORS.accentBright
-        elseif reason ~= "" and reason ~= "at floor" then
-            status.TextColor3 = COLORS.accent
-        else
-            status.TextColor3 = COLORS.dim
-        end
-    end
-
-    pacc += 0.3
-    if panel.Visible and pacc >= 0.6 then
-        pacc = 0
-        refreshPlayers()
-    end
-end)
-
-loadCfg()
-sizeBtn.Text = SIZELBL[SIZES[sizeIdx]]
-fmtBtn.Text = FMTLBL[FORMATS[fmtIdx]]
-if CONFIG.panelOpen then
-    panel.Visible = true
-    listBtn.Text = "HIDE"
+local function syncDropdown()
+	local gAbs = gui.AbsolutePosition
+	local p = searchWrap.AbsolutePosition
+	local s = searchWrap.AbsoluteSize
+	searchDropdown.Position = UDim2.fromOffset(p.X - gAbs.X, p.Y - gAbs.Y + s.Y + 6)
+	searchDropdown.Size = UDim2.fromOffset(s.X, dropdownHeight)
 end
 
-refreshPlayers()
-if CONFIG.autoStart then setActive(true) end
+local function setDropdownHeight(h)
+	dropdownHeight = h
+	local s = searchWrap.AbsoluteSize
+	tween(searchDropdown, { Size = UDim2.fromOffset(s.X, h) }, 0.15)
+end
+
+searchWrap:GetPropertyChangedSignal("AbsolutePosition"):Connect(syncDropdown)
+searchWrap:GetPropertyChangedSignal("AbsoluteSize"):Connect(syncDropdown)
+searchWrap.Destroying:Connect(function() searchDropdown:Destroy() end)
+
+local SEARCH_INDEX = {
+	{ name = "Information", tab = "main", hint = "Tab" },
+	{ name = "Grief",       tab = "grief", hint = "Tab" },
+	{ name = "Settings",    tab = "settings", hint = "Tab" },
+}
+
+local firstMatchTab = nil
+
+local function clearDropdown()
+	for _, c in ipairs(searchDropdown:GetChildren()) do
+		if c:IsA("TextButton") or c:IsA("TextLabel") then
+			c:Destroy()
+		end
+	end
+end
+
+local function filterSearch(query)
+	clearDropdown()
+	firstMatchTab = nil
+	if query == "" then
+		searchDropdown.Visible = false
+		return
+	end
+	local q = string.lower(query)
+	local matches = {}
+	for _, item in ipairs(SEARCH_INDEX) do
+		if string.find(string.lower(item.name), q, 1, true) then
+			table.insert(matches, item)
+		end
+	end
+	syncDropdown()
+	searchDropdown.Visible = true
+	if #matches == 0 then
+		setDropdownHeight(36)
+		new("TextLabel", {
+			Size = UDim2.new(1,-16,0,36),
+			Position = UDim2.new(0,8,0,0),
+			BackgroundTransparency = 1,
+			Text = "No results",
+			TextColor3 = THEME.TextMute,
+			Font = Enum.Font.Gotham,
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 101, Parent = searchDropdown,
+		})
+		return
+	end
+	firstMatchTab = matches[1].tab
+	local rowH = 36
+	local showCount = math.min(#matches, 5)
+	setDropdownHeight(showCount * rowH + 8)
+	for i = 1, showCount do
+		local m = matches[i]
+		local row = new("TextButton", {
+			Position = UDim2.new(0,4,0,4 + (i-1)*rowH),
+			Size = UDim2.new(1,-8,0,rowH-4),
+			BackgroundColor3 = THEME.SurfaceHi,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			AutoButtonColor = false,
+			Text = "",
+			ZIndex = 101, Parent = searchDropdown,
+		})
+		corner(row, 6)
+		local dot = new("Frame", {
+			AnchorPoint = Vector2.new(0,0.5),
+			Position = UDim2.new(0,10,0.5,0),
+			Size = UDim2.new(0,6,0,6),
+			BackgroundColor3 = THEME.Accent,
+			BorderSizePixel = 0, ZIndex = 102, Parent = row,
+		})
+		corner(dot, 999)
+		new("TextLabel", {
+			Position = UDim2.new(0,24,0,0),
+			Size = UDim2.new(1,-80,1,0),
+			BackgroundTransparency = 1,
+			Text = m.name,
+			TextColor3 = THEME.Text,
+			Font = Enum.Font.GothamMedium,
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			ZIndex = 102, Parent = row,
+		})
+		new("TextLabel", {
+			AnchorPoint = Vector2.new(1,0.5),
+			Position = UDim2.new(1,-8,0.5,0),
+			Size = UDim2.new(0,50,1,0),
+			BackgroundTransparency = 1,
+			Text = m.hint,
+			TextColor3 = THEME.TextMute,
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Right,
+			ZIndex = 102, Parent = row,
+		})
+		row.MouseEnter:Connect(function() tween(row, { BackgroundTransparency=0.5 }, 0.1) end)
+		row.MouseLeave:Connect(function() tween(row, { BackgroundTransparency=1 }, 0.1) end)
+		row.MouseButton1Click:Connect(function()
+			playClick(1)
+			_G.__showPage(m.tab)
+			searchInput.Text = ""
+			searchDropdown.Visible = false
+		end)
+	end
+end
+
+searchInput:GetPropertyChangedSignal("Text"):Connect(function()
+	filterSearch(searchInput.Text)
+end)
+
+searchInput.FocusLost:Connect(function(enterPressed)
+	if enterPressed and firstMatchTab then
+		playClick(1)
+		_G.__showPage(firstMatchTab)
+		searchInput.Text = ""
+		searchDropdown.Visible = false
+	end
+end)
+
+local function inside(guiObj, pos)
+	local a, s = guiObj.AbsolutePosition, guiObj.AbsoluteSize
+	return pos.X >= a.X and pos.X <= a.X + s.X and pos.Y >= a.Y and pos.Y <= a.Y + s.Y
+end
+
+connect(UserInputService.InputBegan, function(input, gpe)
+	if not searchDropdown.Visible then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1
+		and input.UserInputType ~= Enum.UserInputType.Touch then
+		return
+	end
+	local pos = Vector2.new(input.Position.X, input.Position.Y)
+	if not inside(searchWrap, pos) and not inside(searchDropdown, pos) then
+		searchDropdown.Visible = false
+	end
+end)
+
+local nav = new("Frame", {
+	Position=UDim2.new(0,8,0,96), Size=UDim2.new(1,-16,0,200),
+	BackgroundTransparency=1, Parent=sidebarContent,
+})
+local navLay = Instance.new("UIListLayout")
+navLay.Padding = UDim.new(0,4); navLay.Parent = nav
+
+-- Animated Active Tab Indicator
+local navIndicator = new("Frame", {
+	AnchorPoint = Vector2.new(0, 0.5),
+	Position = UDim2.new(0, 4, 0, 96 + 18),
+	Size = UDim2.new(0, 4, 0, 18),
+	BackgroundColor3 = THEME.Accent,
+	BorderSizePixel = 0,
+	ZIndex = 5,
+	Parent = sidebarContent
+})
+corner(navIndicator, 999)
+
+local navButtons = {}
+local pages = {}
+
+pageHolder = new("Frame", {
+	Position=UDim2.new(0,180,0,50), Size=UDim2.new(1,-180,1,-50),
+	BackgroundTransparency=1, Parent=window,
+})
+
+local function navIcon(kind, color, parent)
+	local holder_ = new("Frame", {
+		Name="Icon",
+		AnchorPoint=Vector2.new(0.5,0.5),
+		Position=UDim2.new(0.5,0,0.5,0),
+		Size=UDim2.new(0,18,0,18),
+		BackgroundTransparency=1,
+		Parent=parent,
+	})
+
+	local parts = {}
+
+	if kind == "grid" then
+		local img = new("ImageLabel", {
+			Name = "Icon",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+			Size = UDim2.new(0, 18, 0, 18),
+			BackgroundTransparency = 1,
+			Image = "rbxthumb://type=Asset&id=126105541677706&w=150&h=150",
+			ImageColor3 = color,
+			ScaleType = Enum.ScaleType.Fit,
+			Parent = holder_,
+		})
+		table.insert(parts, img)
+
+	elseif kind == "layers" then
+		local img = new("ImageLabel", {
+			Name = "Icon",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+			Size = UDim2.new(0, 18, 0, 18),
+			BackgroundTransparency = 1,
+			Image = "rbxthumb://type=Asset&id=92566690227306&w=150&h=150",
+			ImageColor3 = color,
+			ScaleType = Enum.ScaleType.Fit,
+			Parent = holder_,
+		})
+		table.insert(parts, img)
+
+	elseif kind == "sliders" then
+		local img = new("ImageLabel", {
+			Name = "Icon",
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 0),
+			Size = UDim2.new(0, 18, 0, 18),
+			BackgroundTransparency = 1,
+			Image = "rbxthumb://type=Asset&id=94796144442755&w=150&h=150",
+			ImageColor3 = color,
+			ScaleType = Enum.ScaleType.Fit,
+			Parent = holder_,
+		})
+		table.insert(parts, img)
+	end
+
+	return holder_, parts
+end
+
+local navParts = {}
+local navIconBgs = {}
+for i, tab in ipairs(TABS) do
+	local btn = new("TextButton", {
+		Size=UDim2.new(1,0,0,36), BackgroundColor3=THEME.Bg,
+		BackgroundTransparency=1, BorderSizePixel=0, AutoButtonColor=false,
+		Text="", LayoutOrder=i, Parent=nav,
+	})
+	corner(btn, 8)
+
+	local ibg = new("Frame", {
+		AnchorPoint=Vector2.new(0, 0.5),
+		Position=UDim2.new(0, 8, 0.5, 0),
+		Size=UDim2.new(0, 26, 0, 26),
+		BackgroundColor3=THEME.SurfaceHi,
+		BackgroundTransparency=TRANSPARENCY,
+		BorderSizePixel=0, Parent=btn,
+	})
+	corner(ibg, 6)
+	navIconBgs[tab.id] = ibg
+
+	local _, parts = navIcon(tab.icon, THEME.TextDim, ibg)
+	navParts[tab.id] = parts
+
+	local lbl = new("TextLabel", {
+		Position=UDim2.new(0,42,0,0), Size=UDim2.new(1,-42,1,0),
+		BackgroundTransparency=1, Text=tab.label, TextColor3=THEME.TextDim,
+		Font=Enum.Font.GothamMedium, TextSize=14,
+		TextXAlignment=Enum.TextXAlignment.Left, Parent=btn,
+	})
+	navLabels[tab.id] = lbl 
+
+	btn.MouseButton1Click:Connect(function()
+		playClick(1)
+		_G.__showPage(tab.id)
+	end)
+	navButtons[tab.id] = btn
+end
+
+local userCard = new("TextButton", {
+	AnchorPoint=Vector2.new(0.5,1), Position=UDim2.new(0.5,0,1,-12),
+	Size=UDim2.new(1,-24,0,44), BackgroundColor3=Color3.fromRGB(0, 0, 0),
+	BackgroundTransparency=0.3, BorderSizePixel=0,
+	AutoButtonColor=false, Text="", Parent=sidebarContent,
+})
+corner(userCard, 10)
+local avatar = new("ImageLabel", {
+	AnchorPoint=Vector2.new(0,0.5), Position=UDim2.new(0,8,0.5,0),
+	Size=UDim2.new(0,26,0,26), BackgroundColor3=THEME.SurfaceHi,
+	BorderSizePixel=0, Image="rbxthumb://type=AvatarHeadShot&id="..LP.UserId.."&w=150&h=150",
+	Parent=userCard,
+})
+corner(avatar, 999)
+new("TextLabel", {
+	Position=UDim2.new(0,42,0,4), Size=UDim2.new(1,-50,0,14),
+	BackgroundTransparency=1, Text=LP.DisplayName, TextColor3=THEME.Text,
+	Font=Enum.Font.GothamBold, TextSize=13,
+	TextXAlignment=Enum.TextXAlignment.Left, Parent=userCard,
+})
+new("TextLabel", {
+	Position=UDim2.new(0,42,0,20), Size=UDim2.new(1,-50,0,12),
+	BackgroundTransparency=1, Text="@"..LP.Name, TextColor3=THEME.TextMute,
+	Font=Enum.Font.Gotham, TextSize=11,
+	TextXAlignment=Enum.TextXAlignment.Left, Parent=userCard,
+})
+
+for _, tab in ipairs(TABS) do
+	local p = new("ScrollingFrame", {
+		Name=tab.id, Size=UDim2.fromScale(1,1), BackgroundTransparency=1,
+		BorderSizePixel=0, Visible=false, ScrollBarThickness=2,
+		ScrollBarImageColor3=THEME.SurfaceHi, CanvasSize=UDim2.new(0,0,0,0),
+		AutomaticCanvasSize=Enum.AutomaticSize.Y, Parent=pageHolder,
+	})
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0,12); layout.Parent = p
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0,16); pad.PaddingBottom = UDim.new(0,16)
+	pad.PaddingLeft = UDim.new(0,16); pad.PaddingRight = UDim.new(0,16)
+	pad.Parent = p
+	pages[tab.id] = p
+end
+
+_G.__showPage = function(id)
+	for i, tab in ipairs(TABS) do
+		local tid = tab.id
+		local active = (tid == id)
+		
+		navButtons[tid].BackgroundTransparency = 1
+		
+		local lbl = navLabels[tid]
+		if lbl then tween(lbl, { TextColor3 = active and THEME.Text or THEME.TextDim }, 0.2) end
+
+		local iconColor = active and THEME.Accent or THEME.TextDim
+		local parts = navParts[tid]
+		if parts then
+			for _, pt in ipairs(parts) do
+				if pt:IsA("UIStroke") then
+					tween(pt, { Color = iconColor }, 0.2)
+				elseif pt:IsA("ImageLabel") then
+					tween(pt, { ImageColor3 = iconColor }, 0.2)
+				else
+					tween(pt, { BackgroundColor3 = iconColor }, 0.2)
+				end
+			end
+		end
+
+		local ibg = navIconBgs[tid]
+		if ibg then
+			local bgColor = active and THEME.Accent:Lerp(THEME.SurfaceHi, 0.8) or THEME.SurfaceHi
+			tween(ibg, { BackgroundColor3 = bgColor }, 0.2)
+		end
+		
+		if active then
+			local targetY = 96 + 18 + (i - 1) * 40
+			tween(navIndicator, { Position = UDim2.new(0, 4, 0, targetY) }, 0.3, Enum.EasingStyle.Quint)
+		end
+	end
+	for pid, p in pairs(pages) do
+		p.Visible = (pid == id)
+	end
+end
+
+local function makeCard(parent, height, title)
+	local card = new("Frame", {
+		Size=UDim2.new(1,0,0,height), BackgroundColor3=THEME.Surface,
+		BackgroundTransparency=TRANSPARENCY, BorderSizePixel=0, Parent=parent,
+	})
+	corner(card, 10)
+	if title then
+		new("TextLabel", {
+			Position=UDim2.new(0,16,0,12), Size=UDim2.new(1,-32,0,18),
+			BackgroundTransparency=1, Text=title, TextColor3=THEME.Text,
+			Font=Enum.Font.GothamBold, TextSize=16,
+			TextXAlignment=Enum.TextXAlignment.Left, Parent=card,
+		})
+	end
+	return card
+end
+
+do
+	local home = pages.main
+	local welcomeCard = makeCard(home, 180)
+
+	welcomeHeader = new("TextLabel", {
+		Position=UDim2.new(0,16,0,16),
+		Size=UDim2.new(0.4,-16,0,20),
+		BackgroundTransparency=1,
+		Text="Welcome,",
+		TextColor3=THEME.Text,
+		Font=Enum.Font.GothamMedium,
+		TextSize=14,
+		TextXAlignment=Enum.TextXAlignment.Left,
+		Parent=welcomeCard
+	})
+	new("TextLabel", {
+		Position=UDim2.new(0,16,0,38),
+		Size=UDim2.new(0.4,-16,0,40),
+		BackgroundTransparency=1,
+		Text=LP.DisplayName,
+		TextColor3=THEME.Text,
+		Font=Enum.Font.GothamBlack,
+		TextSize=24,
+		TextXAlignment=Enum.TextXAlignment.Left,
+		Parent=welcomeCard
+	})
+
+	local welcomeIcon = new("ImageLabel", {
+		Position=UDim2.new(0,16,0,84),
+		Size=UDim2.new(0,44,0,44),
+		BackgroundTransparency=1,
+		Image="rbxthumb://type=AvatarHeadShot&id="..LP.UserId.."&w=150&h=150",
+		Parent=welcomeCard
+	})
+	corner(welcomeIcon, 999)
+
+	local vBadge = new("TextButton", {
+		AnchorPoint=Vector2.new(1,0),
+		Position=UDim2.new(1,-16,0,16),
+		Size=UDim2.new(0, 44, 0, 22),
+		BackgroundColor3=THEME.Accent,
+		BackgroundTransparency=0.8,
+		BorderSizePixel=0,
+		Text="v2.7.1",
+		TextColor3=THEME.Accent,
+		Font=Enum.Font.GothamBold,
+		TextSize=13,
+		Parent=welcomeCard
+	})
+	corner(vBadge, 6)
+	vBadge.MouseButton1Click:Connect(function() playClick(1) end)
+
+	welcomeText = new("TextLabel", {
+		Position=UDim2.new(0.4, 8, 0, 44),
+		Size=UDim2.new(0.6,-24,0,120),
+		BackgroundTransparency=1,
+		Text="Dirt is a premium utility interface designed for performance and aesthetics. Features include live status tracking, a fully searchable menu, customizable UI scaling, and much more. Stay tuned for upcoming modules.",
+		TextColor3=Color3.fromRGB(235, 240, 245),
+		Font=Enum.Font.Gotham,
+		TextSize=13,
+		TextXAlignment=Enum.TextXAlignment.Left,
+		TextYAlignment=Enum.TextYAlignment.Top,
+		TextWrapped=true,
+		Parent=welcomeCard
+	})
+
+	local comingCard = makeCard(home, 200)
+	local csLbl = new("TextLabel", {
+		Size=UDim2.fromScale(1,1),
+		BackgroundTransparency=1,
+		Text="Coming Soon",
+		TextColor3=THEME.TextMute,
+		Font=Enum.Font.GothamBlack,
+		TextSize=24,
+		Parent=comingCard
+	})
+	table.insert(comingSoonLabels, csLbl)
+end
+
+do
+	local grief = pages.grief
+	local comingCard = makeCard(grief, 200)
+	local csLbl = new("TextLabel", {
+		Size=UDim2.fromScale(1,1),
+		BackgroundTransparency=1,
+		Text="Coming Soon",
+		TextColor3=THEME.TextMute,
+		Font=Enum.Font.GothamBlack,
+		TextSize=24,
+		Parent=comingCard
+	})
+	table.insert(comingSoonLabels, csLbl)
+end
+
+-- SETTINGS PAGE
+do
+	local settings = pages.settings
+	local comingCard = makeCard(settings, 200)
+	local csLbl = new("TextLabel", {
+		Size=UDim2.fromScale(1,1),
+		BackgroundTransparency=1,
+		Text="Coming Soon",
+		TextColor3=THEME.TextMute,
+		Font=Enum.Font.GothamBlack,
+		TextSize=24,
+		Parent=comingCard
+	})
+	table.insert(comingSoonLabels, csLbl)
+end
+
+-- MIDDLE-SIZED SCALE
+local function applyScale()
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	local vp = cam.ViewportSize
+	if vp.X == 0 or vp.Y == 0 then return end
+	-- Balanced scale mapping
+	local s = math.clamp(math.min(vp.X / 1280, vp.Y / 720), 0.75, 1.05) 
+	
+	if UserInputService.TouchEnabled then
+		s = math.max(s, 0.8)
+	end
+	
+	uiScale.Scale = s
+end
+applyScale()
+
+local cameraConn
+local function bindCamera()
+	local cam = workspace.CurrentCamera
+	if not cam then return end
+	if cameraConn then cameraConn:Disconnect() end
+	cameraConn = cam:GetPropertyChangedSignal("ViewportSize"):Connect(applyScale)
+	table.insert(connections, cameraConn)
+end
+bindCamera()
+connect(workspace:GetPropertyChangedSignal("CurrentCamera"), function()
+	bindCamera(); applyScale()
+end)
+
+function setVisible(state)
+	if isMinimized then
+		if not state then
+			miniWidget.Visible = false
+		else
+			restoreWindow()
+		end
+		return
+	end
+
+	if isVisible == state then return end
+	isVisible = state
+	if state then
+		window.Visible = true; shadow.Visible = true
+		
+		window.Size = UDim2.new(0, 604, 0, 418); window.BackgroundTransparency = 1
+		shadow.Size = UDim2.new(0, 604, 0, 418); shadow.BackgroundTransparency = 1
+		
+		tween(window, { Size=UDim2.new(0, 654, 0, 468), BackgroundTransparency=TRANSPARENCY }, 0.42, Enum.EasingStyle.Back)
+		tween(shadow, { Size=UDim2.new(0, 654, 0, 468), BackgroundTransparency=0.9 }, 0.42, Enum.EasingStyle.Back)
+	else
+		tween(window, { Size=UDim2.new(0, 604, 0, 418), BackgroundTransparency=1 }, 0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+		
+		local t = tween(shadow, { Size=UDim2.new(0, 604, 0, 418), BackgroundTransparency=1 }, 0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In)
+		t.Completed:Connect(function()
+			if not isVisible and not isMinimized then window.Visible=false; shadow.Visible=false end
+		end)
+	end
+end
+
+do
+	local dragging    = false
+	local dragStart   = nil
+	local startPos    = nil
+	local activeTouch = nil
+	local endConn     = nil
+
+	local function stopDrag()
+		dragging    = false
+		dragStart   = nil
+		startPos    = nil
+		activeTouch = nil
+		if endConn then
+			endConn:Disconnect()
+			endConn = nil
+		end
+	end
+
+	topbar.Active = true
+
+	topbar.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging    = true
+			dragStart   = input.Position
+			startPos    = window.Position
+			activeTouch = nil
+
+			if endConn then endConn:Disconnect() end
+			endConn = input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End
+					or input.UserInputState == Enum.UserInputState.Cancel then
+					stopDrag()
+				end
+			end)
+
+		elseif input.UserInputType == Enum.UserInputType.Touch then
+			dragging    = true
+			dragStart   = input.Position
+			startPos    = window.Position
+			activeTouch = input
+
+			if endConn then endConn:Disconnect() end
+			endConn = input.Changed:Connect(function()
+				if input.UserInputState == Enum.UserInputState.End
+					or input.UserInputState == Enum.UserInputState.Cancel then
+					stopDrag()
+				end
+			end)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if not dragging or not dragStart then return end
+
+		if input.UserInputType == Enum.UserInputType.MouseMovement then
+			if activeTouch ~= nil then return end
+		elseif input.UserInputType == Enum.UserInputType.Touch then
+			if input ~= activeTouch then return end
+		else
+			return
+		end
+
+		local delta = input.Position - dragStart
+		local scale = (uiScale and uiScale.Scale > 0) and uiScale.Scale or 1
+
+		local newPos = UDim2.new(
+			startPos.X.Scale, startPos.X.Offset + delta.X / scale,
+			startPos.Y.Scale, startPos.Y.Offset + delta.Y / scale
+		)
+
+		window.Position = newPos
+		shadow.Position = newPos
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if activeTouch ~= nil and input == activeTouch then
+			stopDrag()
+		elseif activeTouch == nil and dragging
+			and input.UserInputType == Enum.UserInputType.MouseButton1 then
+			stopDrag()
+		end
+	end)
+	UserInputService.WindowFocusReleased:Connect(stopDrag)
+end
+
+local TOGGLE_KEY = Enum.KeyCode.K
+
+connect(UserInputService.InputBegan, function(input, gpe)
+	if gpe then return end
+	if _G.__isAwaiting and _G.__isAwaiting() then
+		if input.UserInputType == Enum.UserInputType.Keyboard then
+			TOGGLE_KEY = input.KeyCode
+			if _G.__setKey then _G.__setKey(input.KeyCode) end
+			notify("Keybind", "Bound to " .. input.KeyCode.Name, THEME.Accent)
+		end
+		return
+	end
+	if input.KeyCode == TOGGLE_KEY then
+		setVisible(not isVisible)
+	end
+end)
+
+gui.Destroying:Connect(function()
+	for _, c in ipairs(connections) do
+		pcall(function() c:Disconnect() end)
+	end
+	if blur then blur:Destroy() end
+end)
+
+do
+	local LOADING_MSG = "Dirt|Hub loading..."
+
+	task.wait(1)
+
+	local sentNewChat = false
+	pcall(function()
+		local TextChatService = game:GetService("TextChatService")
+		if TextChatService.ChatVersion ~= Enum.ChatVersion.TextChatService then
+			return
+		end
+		local textChannels = TextChatService:FindFirstChild("TextChannels")
+		if not textChannels then
+			textChannels = TextChatService:WaitForChild("TextChannels", 5)
+		end
+		if not textChannels then return end
+		local general = textChannels:FindFirstChild("RBXGeneral")
+		if not general then
+			general = textChannels:WaitForChild("RBXGeneral", 5)
+		end
+		if general and general:IsA("TextChannel") then
+			general:DisplaySystemMessage(LOADING_MSG)
+			sentNewChat = true
+		end
+	end)
+
+	if not sentNewChat then
+		pcall(function()
+			game:GetService("StarterGui"):SetCore("ChatMakeSystemMessage", {
+				Text = LOADING_MSG,
+				Color = Color3.fromRGB(45, 212, 191),
+				Font = Enum.Font.SourceSansBold,
+				TextSize = 16,
+			})
+		end)
+	end
+end
+
+_G.__showPage("main")
+applyTranslation("EN")
+
+task.delay(0.5, function()
+	if gui.Parent then
+		notify("Dirt", "Ender Hub Edition Loaded", THEME.Accent)
+	end
+end)
+print("[Dirt] v2.7.1")
