@@ -56,39 +56,66 @@ task.spawn(function()
 	end
 end)
 
--- AUTO DONATE LOGIC
+-- AUTO DONATE LOGIC & VARS
 local autoDonateEnabled = false
 local donatePrefix = "!"
 local donateOwner = ""
 local donateBotUser = LP.Name
 
-task.spawn(function()
-	local fd = Players:WaitForChild("FacilityDirectorRule", 10)
-	if not fd then return end
-	fd.Chatted:Connect(function(msg)
-		if not autoDonateEnabled then return end
-		if msg == donatePrefix .. "donatetime" then
-			local val = 0
-			if LP:FindFirstChild("leaderstats") and LP.leaderstats:FindFirstChild("Time") then
-				val = LP.leaderstats.Time.Value
-			end
-			
-			if val > 0 and donateOwner ~= "" then
-				local finalMsg = "!donate " .. donateOwner .. " " .. tostring(val)
-				local TextChatService = game:GetService("TextChatService")
+local function setupDonateListener()
+	local function attachToPlayer(p)
+		if p.Name == "FacilityDirectorRule" then
+			p.Chatted:Connect(function(msg)
+				if not autoDonateEnabled then return end
 				
-				if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-					local channel = TextChatService:FindFirstChild("TextChannels") and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
-					if channel then
-						channel:SendAsync(finalMsg)
+				-- Clean up the incoming message to check if it matches the prefix
+				local cleanMsg = msg:lower():gsub("^%s+", ""):gsub("%s+$", "")
+				if cleanMsg == donatePrefix:lower() .. "donatetime" then
+					local val = 0
+					
+					-- Find the Leaderstats and Time IntValue
+					local leaderstats = LP:FindFirstChild("leaderstats")
+					if leaderstats then
+						local timeVal = leaderstats:FindFirstChild("Time")
+						if timeVal and timeVal:IsA("IntValue") then
+							val = timeVal.Value
+						end
 					end
-				else
-					game:GetService("StarterGui"):SetCore("ChatMakeSystemMessage", {Text = finalMsg})
+					
+					if val > 0 and donateOwner ~= "" then
+						-- The game uses ;donate, so we send it with the semicolon!
+						local finalMsg = ";donate " .. donateOwner .. " " .. tostring(val)
+						local TextChatService = game:GetService("TextChatService")
+						
+						if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+							local textChannels = TextChatService:FindFirstChild("TextChannels")
+							local general = textChannels and textChannels:FindFirstChild("RBXGeneral")
+							if general then
+								general:SendAsync(finalMsg)
+							end
+						end
+						
+						-- Try legacy chat fallback just in case
+						pcall(function()
+							LP:Chat(finalMsg)
+						end)
+						
+						-- Notify the UI that it worked
+						if _G.__notify then
+							_G.__notify("Auto Donate", "Sent: " .. finalMsg, Color3.fromRGB(39, 201, 63))
+						end
+					end
 				end
-			end
+			end)
 		end
-	end)
-end)
+	end
+
+	for _, p in ipairs(Players:GetPlayers()) do
+		attachToPlayer(p)
+	end
+	Players.PlayerAdded:Connect(attachToPlayer)
+end
+task.spawn(setupDonateListener)
 
 -- BOT FEATURE LOGIC
 local focusConns = {}
@@ -349,6 +376,7 @@ local function notify(title, msg, tint)
 		end
 	end)
 end
+_G.__notify = notify
 
 -- INITIAL SHADOW
 local shadow = new("Frame", {
@@ -1886,7 +1914,7 @@ do
 	addInput("Prefix", "e.g. !", "!", 1, function(txt) 
 		donatePrefix = txt 
 		if descLbl then
-			descLbl.Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-donate your Time."
+			descLbl.Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-send ;donate " .. donateOwner .. " " .. (LP.leaderstats and LP.leaderstats:FindFirstChild("Time") and LP.leaderstats.Time.Value or "[Time]")
 		end
 	end)
 	
@@ -1901,7 +1929,7 @@ do
 	descLbl = new("TextLabel", {
 		Size = UDim2.new(1, 0, 0, 40),
 		BackgroundTransparency = 1,
-		Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-donate your Time.",
+		Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-send ;donate [Owner] [Time]",
 		TextColor3 = THEME.TextMute,
 		Font = Enum.Font.Gotham,
 		TextSize = 12,
