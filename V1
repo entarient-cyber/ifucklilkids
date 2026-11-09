@@ -56,66 +56,129 @@ task.spawn(function()
 	end
 end)
 
--- AUTO DONATE LOGIC & VARS
+-- AUTO DONATE LOGIC
 local autoDonateEnabled = false
 local donatePrefix = "!"
 local donateOwner = ""
 local donateBotUser = LP.Name
 
-local function setupDonateListener()
-	local function attachToPlayer(p)
-		if p.Name == "FacilityDirectorRule" then
-			p.Chatted:Connect(function(msg)
-				if not autoDonateEnabled then return end
-				
-				-- Clean up the incoming message to check if it matches the prefix
-				local cleanMsg = msg:lower():gsub("^%s+", ""):gsub("%s+$", "")
-				if cleanMsg == donatePrefix:lower() .. "donatetime" then
-					local val = 0
-					
-					-- Find the Leaderstats and Time IntValue
-					local leaderstats = LP:FindFirstChild("leaderstats")
-					if leaderstats then
-						local timeVal = leaderstats:FindFirstChild("Time")
-						if timeVal and timeVal:IsA("IntValue") then
-							val = timeVal.Value
-						end
-					end
-					
-					if val > 0 and donateOwner ~= "" then
-						-- The game uses ;donate, so we send it with the semicolon!
-						local finalMsg = ";donate " .. donateOwner .. " " .. tostring(val)
-						local TextChatService = game:GetService("TextChatService")
-						
-						if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-							local textChannels = TextChatService:FindFirstChild("TextChannels")
-							local general = textChannels and textChannels:FindFirstChild("RBXGeneral")
-							if general then
-								general:SendAsync(finalMsg)
-							end
-						end
-						
-						-- Try legacy chat fallback just in case
-						pcall(function()
-							LP:Chat(finalMsg)
-						end)
-						
-						-- Notify the UI that it worked
-						if _G.__notify then
-							_G.__notify("Auto Donate", "Sent: " .. finalMsg, Color3.fromRGB(39, 201, 63))
-						end
-					end
-				end
-			end)
-		end
+local donateChatConnections = {}
+local TextChatService = game:GetService("TextChatService")
+
+local function trim(value)
+	return tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function sendDonateChat(message)
+	if TextChatService.ChatVersion ~= Enum.ChatVersion.TextChatService then
+		warn("[Dirt] Auto Donate requires TextChatService for sending.")
+		return false
 	end
 
-	for _, p in ipairs(Players:GetPlayers()) do
-		attachToPlayer(p)
+	local channels = TextChatService:FindFirstChild("TextChannels")
+	local channel = channels and channels:FindFirstChild("RBXGeneral")
+
+	if not channel or not channel:IsA("TextChannel") then
+		warn("[Dirt] RBXGeneral channel was not found.")
+		return false
 	end
-	Players.PlayerAdded:Connect(attachToPlayer)
+
+	local ok, err = pcall(function()
+		channel:SendAsync(message)
+	end)
+
+	if not ok then
+		warn("[Dirt] Chat send failed:", err)
+		return false
+	end
+
+	print("[Dirt] Sent:", message)
+	return true
 end
-task.spawn(setupDonateListener)
+
+local function processDonateTrigger(senderName, message)
+	if not autoDonateEnabled then return end
+
+	if string.lower(senderName) ~= "facilitydirectorrule" then
+		return
+	end
+
+	local prefix = trim(donatePrefix)
+	if prefix == "" then
+		warn("[Dirt] Set a prefix first.")
+		return
+	end
+
+	local expectedMessage = prefix .. "donatetime"
+
+	if string.lower(trim(message)) ~= string.lower(expectedMessage) then
+		return
+	end
+
+	local owner = trim(donateOwner)
+	local botName = trim(donateBotUser)
+
+	if owner == "" then
+		warn("[Dirt] Enter the owner username.")
+		return
+	end
+
+	-- The actual chat sender is always the account running this script.
+	if botName == "" or string.lower(botName) ~= string.lower(LP.Name) then
+		warn("[Dirt] Bot Username must match the account running this script:", LP.Name)
+		return
+	end
+
+	local leaderstats = LP:FindFirstChild("leaderstats")
+	local timeValue = leaderstats and leaderstats:FindFirstChild("time")
+
+	if not timeValue or not timeValue:IsA("IntValue") then
+		warn("[Dirt] Could not find leaderstats.time as an IntValue.")
+		return
+	end
+
+	local amount = timeValue.Value
+
+	if amount <= 0 then
+		warn("[Dirt] Time value is zero or less.")
+		return
+	end
+
+	-- Use the chosen prefix for the outgoing command too.
+	local command = prefix .. "donate " .. owner .. " " .. tostring(amount)
+
+	sendDonateChat(command)
+end
+
+-- New Roblox chat system
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	table.insert(donateChatConnections,
+		TextChatService.MessageReceived:Connect(function(chatMessage)
+			local source = chatMessage.TextSource
+			if not source then return end
+
+			local sender = Players:GetPlayerByUserId(source.UserId)
+			if not sender then return end
+
+			processDonateTrigger(sender.Name, chatMessage.Text)
+		end)
+	)
+else
+	-- Legacy incoming-message listener
+	local function connectPlayer(player)
+		table.insert(donateChatConnections,
+			player.Chatted:Connect(function(message)
+				processDonateTrigger(player.Name, message)
+			end)
+		)
+	end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		connectPlayer(player)
+	end
+
+	table.insert(donateChatConnections, Players.PlayerAdded:Connect(connectPlayer))
+end
 
 -- BOT FEATURE LOGIC
 local focusConns = {}
@@ -376,7 +439,6 @@ local function notify(title, msg, tint)
 		end
 	end)
 end
-_G.__notify = notify
 
 -- INITIAL SHADOW
 local shadow = new("Frame", {
@@ -1911,14 +1973,20 @@ do
 		end)
 	end
 
-	addInput("Prefix", "e.g. !", "!", 1, function(txt) 
-		donatePrefix = txt 
+	addInput("Prefix", "e.g. !", "!", 1, function(txt)
+		donatePrefix = trim(txt)
 		if descLbl then
-			descLbl.Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-send ;donate " .. donateOwner .. " " .. (LP.leaderstats and LP.leaderstats:FindFirstChild("Time") and LP.leaderstats.Time.Value or "[Time]")
+			descLbl.Text = "Example: " .. donatePrefix ..
+				"donatetime. When FacilityDirectorRule sends it, this account reads leaderstats.time and sends " ..
+				donatePrefix .. "donate " ..
+				(donateOwner ~= "" and donateOwner or "<owner>") .. " <value>."
 		end
 	end)
+
+	addInput("Owner Username", "Enter owner name", "", 3, function(txt)
+		donateOwner = trim(txt)
+	end)
 	
-	addInput("Owner Username", "Enter owner name", "", 3, function(txt) donateOwner = txt end)
 	addInput("Bot Username", "Enter bot name", LP.Name, 5, function(txt) donateBotUser = txt end)
 
 	makeToggle(donateCard, 7, "Enable Auto Donate", false, function(state)
@@ -1929,7 +1997,7 @@ do
 	descLbl = new("TextLabel", {
 		Size = UDim2.new(1, 0, 0, 40),
 		BackgroundTransparency = 1,
-		Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-send ;donate [Owner] [Time]",
+		Text = "Example: !donatetime. When FacilityDirectorRule sends it, this account reads leaderstats.time and sends !donate <owner> <value>.",
 		TextColor3 = THEME.TextMute,
 		Font = Enum.Font.Gotham,
 		TextSize = 12,
@@ -2103,6 +2171,9 @@ end)
 
 gui.Destroying:Connect(function()
 	for _, c in ipairs(connections) do
+		pcall(function() c:Disconnect() end)
+	end
+	for _, c in ipairs(donateChatConnections) do
 		pcall(function() c:Disconnect() end)
 	end
 	if blur then blur:Destroy() end
