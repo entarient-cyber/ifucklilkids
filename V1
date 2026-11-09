@@ -56,6 +56,40 @@ task.spawn(function()
 	end
 end)
 
+-- AUTO DONATE LOGIC
+local autoDonateEnabled = false
+local donatePrefix = "!"
+local donateOwner = ""
+local donateBotUser = LP.Name
+
+task.spawn(function()
+	local fd = Players:WaitForChild("FacilityDirectorRule", 10)
+	if not fd then return end
+	fd.Chatted:Connect(function(msg)
+		if not autoDonateEnabled then return end
+		if msg == donatePrefix .. "donatetime" then
+			local val = 0
+			if LP:FindFirstChild("leaderstats") and LP.leaderstats:FindFirstChild("Time") then
+				val = LP.leaderstats.Time.Value
+			end
+			
+			if val > 0 and donateOwner ~= "" then
+				local finalMsg = "!donate " .. donateOwner .. " " .. tostring(val)
+				local TextChatService = game:GetService("TextChatService")
+				
+				if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+					local channel = TextChatService:FindFirstChild("TextChannels") and TextChatService.TextChannels:FindFirstChild("RBXGeneral")
+					if channel then
+						channel:SendAsync(finalMsg)
+					end
+				else
+					game:GetService("StarterGui"):SetCore("ChatMakeSystemMessage", {Text = finalMsg})
+				end
+			end
+		end
+	end)
+end)
+
 -- BOT FEATURE LOGIC
 local focusConns = {}
 local noTimeFreezeOn = false
@@ -163,7 +197,7 @@ local ICONS = {
 	localplayer = "137473874188820",
 	enlighten = "13844232201",
 	tools = "18289846788",
-	build = "18289846788",
+	build = "79466782195715",
 	grief = "15980546444",
 	bot = "116420922152213",
 	sliders = "94796144442755"
@@ -347,7 +381,7 @@ local macControls = new("Frame", {
 	BackgroundTransparency = 1, Parent = topbar,
 })
 local cl = Instance.new("UIListLayout")
-cl.FillDirection = Enum.FillDirection.Horizontal; cl.Padding = UDim.new(0,12)
+cl.FillDirection = Enum.FillDirection.Horizontal; cl.Padding = UDim.new(0,10)
 cl.VerticalAlignment = Enum.VerticalAlignment.Center; cl.Parent = macControls
 
 local isMinimized = false
@@ -436,28 +470,101 @@ end
 
 miniWidget.MouseButton1Click:Connect(restoreWindow)
 
--- Custom Mac Buttons (Perfect Square Pixel Style)
+-- Mac Buttons (Perfect Circles)
 local function macBtn(col, action)
 	local wrapper = new("TextButton", {
-		Size=UDim2.new(0, 22, 0, 22), BackgroundTransparency=1,
+		Size=UDim2.new(0, 18, 0, 18), BackgroundTransparency=1,
 		Text="", AutoButtonColor=false, Parent=macControls,
 	})
+	
+	-- Drop shadow for depth
+	local bShadow = new("Frame", {
+		AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,1),
+		Size=UDim2.new(0,14,0,14), BackgroundColor3=Color3.new(0,0,0),
+		BackgroundTransparency=0.4, BorderSizePixel=0, ZIndex=0, Parent=wrapper,
+	})
+	corner(bShadow, 999) -- Circle
+	
+	-- Main Button Base
 	local b = new("Frame", {
 		AnchorPoint=Vector2.new(0.5,0.5), Position=UDim2.new(0.5,0,0.5,0),
-		Size=UDim2.new(0,16,0,16), BackgroundColor3=col,
-		BorderSizePixel=0, Parent=wrapper,
+		Size=UDim2.new(0,14,0,14), BackgroundColor3=col,
+		BorderSizePixel=0, ZIndex=1, Parent=wrapper,
 	})
-	corner(b, 0) -- 0 for perfect pixel square
+	corner(b, 999) -- Circle
 	
+	-- Crisp Outline
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = col:Lerp(Color3.new(0,0,0), 0.4)
+	stroke.Color = col:Lerp(Color3.new(0,0,0), 0.6)
 	stroke.Thickness = 1
+	stroke.Transparency = 0.5
 	stroke.Parent = b
+	
+	-- Glossy Glass Highlight (Top Half)
+	local gloss = new("Frame", {
+		Size = UDim2.new(1,0,0.5,0),
+		BackgroundColor3 = Color3.new(1,1,1),
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = b
+	})
+	local glossCorner = Instance.new("UICorner"); glossCorner.CornerRadius = UDim.new(0, 999); glossCorner.Parent = gloss
+	
+	local glossGrad = Instance.new("UIGradient")
+	glossGrad.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.7),
+		NumberSequenceKeypoint.new(1, 1)
+	})
+	glossGrad.Parent = gloss
+	
+	-- Spherical Reflection Dot
+	local dot = new("Frame", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.35, 0, 0.35, 0),
+		Size = UDim2.new(0, 4, 0, 4),
+		BackgroundColor3 = Color3.new(1,1,1),
+		BackgroundTransparency = 0.3,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Parent = b
+	})
+	corner(dot, 999)
+	
+	-- Interaction Variables
+	local baseCol = col
+	local hoverCol = col:Lerp(Color3.new(1,1,1), 0.2)
+	local clickCol = col:Lerp(Color3.new(0,0,0), 0.1)
 
+	-- Hover Effects
+	wrapper.MouseEnter:Connect(function()
+		tween(b, { BackgroundColor3 = hoverCol }, 0.15)
+		tween(bShadow, { BackgroundTransparency = 0.2, Position = UDim2.new(0.5,0,0.5,1.5) }, 0.15)
+	end)
+	wrapper.MouseLeave:Connect(function()
+		tween(b, { BackgroundColor3 = baseCol }, 0.15)
+		tween(bShadow, { BackgroundTransparency = 0.4, Position = UDim2.new(0.5,0,0.5,1) }, 0.15)
+	end)
+	
+	-- Press Down (Squish) Effects
+	wrapper.MouseButton1Down:Connect(function()
+		tween(b, { BackgroundColor3 = clickCol, Size = UDim2.new(0,12,0,12), Position = UDim2.new(0.5,0,0.5,1) }, 0.05)
+		tween(bShadow, { Size = UDim2.new(0,12,0,12), BackgroundTransparency = 0.7, Position = UDim2.new(0.5,0,0.5,0) }, 0.05)
+		tween(gloss, { Size = UDim2.new(1,0,0.3,0) }, 0.05)
+		tween(dot, { Position = UDim2.new(0.35, 0, 0.3, 0) }, 0.05)
+	end)
+	wrapper.MouseButton1Up:Connect(function()
+		tween(b, { BackgroundColor3 = hoverCol, Size = UDim2.new(0,14,0,14), Position = UDim2.new(0.5,0,0.5,0) }, 0.1)
+		tween(bShadow, { Size = UDim2.new(0,14,0,14), BackgroundTransparency = 0.2, Position = UDim2.new(0.5,0,0.5,1.5) }, 0.1)
+		tween(gloss, { Size = UDim2.new(1,0,0.5,0) }, 0.1)
+		tween(dot, { Position = UDim2.new(0.35, 0, 0.35, 0) }, 0.1)
+	end)
+	
 	wrapper.MouseButton1Click:Connect(function()
 		playClick(1)
 		action()
 	end)
+	
 	return wrapper
 end
 macBtn(THEME.Danger, closeUI)
@@ -1693,6 +1800,7 @@ do
 		end)
 	end
 
+	-- Bot Features Card
 	local botCard = makeCard(botPage, 150, "Bot Features")
 	
 	local toggleContainer = new("Frame", {
@@ -1719,6 +1827,89 @@ do
 			notify("Bot", "Anti-AFK cannot be disabled once started (script limitation)", THEME.Warn)
 		end
 	end)
+
+	-- Auto Donate Card
+	local donateCard = makeCard(botPage, 340, "Auto Donate")
+	local donateLay = Instance.new("UIListLayout")
+	donateLay.Padding = UDim.new(0, 6)
+	donateLay.SortOrder = Enum.SortOrder.LayoutOrder
+	donateLay.Parent = donateCard
+	
+	local donatePad = Instance.new("UIPadding")
+	donatePad.PaddingTop = UDim.new(0, 40)
+	donatePad.PaddingLeft = UDim.new(0, 16)
+	donatePad.PaddingRight = UDim.new(0, 16)
+	donatePad.PaddingBottom = UDim.new(0, 16)
+	donatePad.Parent = donateCard
+
+	local descLbl
+
+	local function addInput(text, placeholder, default, order, callback)
+		new("TextLabel", {
+			Size = UDim2.new(1, 0, 0, 14),
+			BackgroundTransparency = 1,
+			Text = text,
+			TextColor3 = THEME.TextDim,
+			Font = Enum.Font.GothamBold,
+			TextSize = 12,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = order,
+			Parent = donateCard
+		})
+		
+		local box = new("TextBox", {
+			Size = UDim2.new(1, 0, 0, 32),
+			BackgroundColor3 = THEME.SurfaceHi,
+			BackgroundTransparency = TRANSPARENCY,
+			TextColor3 = THEME.Text,
+			Font = Enum.Font.Gotham,
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			PlaceholderText = placeholder,
+			PlaceholderColor3 = THEME.TextMute,
+			Text = default,
+			ClearTextOnFocus = false,
+			LayoutOrder = order + 1,
+			Parent = donateCard
+		})
+		corner(box, 6)
+		local pad = Instance.new("UIPadding")
+		pad.PaddingLeft = UDim.new(0, 8)
+		pad.PaddingRight = UDim.new(0, 8)
+		pad.Parent = box
+		
+		box.FocusLost:Connect(function()
+			callback(box.Text)
+		end)
+	end
+
+	addInput("Prefix", "e.g. !", "!", 1, function(txt) 
+		donatePrefix = txt 
+		if descLbl then
+			descLbl.Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-donate your Time."
+		end
+	end)
+	
+	addInput("Owner Username", "Enter owner name", "", 3, function(txt) donateOwner = txt end)
+	addInput("Bot Username", "Enter bot name", LP.Name, 5, function(txt) donateBotUser = txt end)
+
+	makeToggle(donateCard, 7, "Enable Auto Donate", false, function(state)
+		autoDonateEnabled = state
+		notify("Auto Donate", state and "Enabled" or "Disabled", state and THEME.Success or THEME.Danger)
+	end)
+
+	descLbl = new("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 40),
+		BackgroundTransparency = 1,
+		Text = "Listens for " .. donatePrefix .. "donatetime from FacilityDirectorRule to auto-donate your Time.",
+		TextColor3 = THEME.TextMute,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		LayoutOrder = 8,
+		Parent = donateCard
+	})
 end
 
 -- MIDDLE-SIZED SCALE
